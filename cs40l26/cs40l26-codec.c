@@ -60,7 +60,7 @@ static int cs40l26_swap_ext_clk(struct cs40l26_codec *codec, u8 clk_src)
 	}
 
 	ret = regmap_update_bits(regmap, CS40L26_REFCLK_INPUT,
-			CS40L26_PLL_REFCLK_OPEN_LOOP_MASK, CS40L26_ENABLE <<
+			CS40L26_PLL_REFCLK_OPEN_LOOP_MASK, 1 <<
 			CS40L26_PLL_REFCLK_OPEN_LOOP_SHIFT);
 	if (ret) {
 		dev_err(dev, "Failed to set Open-Loop PLL\n");
@@ -77,7 +77,7 @@ static int cs40l26_swap_ext_clk(struct cs40l26_codec *codec, u8 clk_src)
 	}
 
 	ret = regmap_update_bits(regmap, CS40L26_REFCLK_INPUT,
-			CS40L26_PLL_REFCLK_OPEN_LOOP_MASK, CS40L26_DISABLE <<
+			CS40L26_PLL_REFCLK_OPEN_LOOP_MASK, 0 <<
 			CS40L26_PLL_REFCLK_OPEN_LOOP_SHIFT);
 	if (ret)
 		dev_err(dev, "Failed to close PLL loop\n");
@@ -93,6 +93,9 @@ static int cs40l26_clk_en(struct snd_soc_dapm_widget *w,
 	struct cs40l26_private *cs40l26 = codec->core;
 	struct device *dev = cs40l26->dev;
 	int ret;
+
+	dev_info(dev, "%s: %s\n", __func__,
+			event == SND_SOC_DAPM_POST_PMU ? "PMU" : "PMD");
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -135,6 +138,9 @@ static int cs40l26_a2h_ev(struct snd_soc_dapm_widget *w,
 	int ret;
 	u32 reg;
 
+	dev_dbg(dev, "%s: %s\n", __func__,
+			event == SND_SOC_DAPM_POST_PMU ? "PMU" : "PMD");
+
 	ret = cl_dsp_get_reg(cs40l26->dsp, "A2HEN", CL_DSP_XM_UNPACKED_TYPE,
 			CS40L26_A2H_ALGO_ID, &reg);
 	if (ret)
@@ -163,9 +169,9 @@ static int cs40l26_a2h_ev(struct snd_soc_dapm_widget *w,
 			if (ret)
 				return ret;
 		}
-		return regmap_write(cs40l26->regmap, reg, CS40L26_ENABLE);
+		return regmap_write(cs40l26->regmap, reg, 1);
 	case SND_SOC_DAPM_PRE_PMD:
-		return regmap_write(cs40l26->regmap, reg, CS40L26_DISABLE);
+		return regmap_write(cs40l26->regmap, reg, 0);
 	default:
 		dev_err(dev, "Invalid A2H event: %d\n", event);
 		return -EINVAL;
@@ -181,8 +187,11 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 	struct device *dev = cs40l26->dev;
 	u32 asp_en_mask = CS40L26_ASP_TX1_EN_MASK | CS40L26_ASP_TX2_EN_MASK |
 			CS40L26_ASP_RX1_EN_MASK | CS40L26_ASP_RX2_EN_MASK;
-	u32 asp_enables;
+	u32 asp_enables, reg;
 	int ret;
+
+	dev_info(dev, "%s: %s\n", __func__,
+			event == SND_SOC_DAPM_POST_PMU ? "PMU" : "PMD");
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -200,10 +209,9 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 			return ret;
 		}
 
-		asp_enables = CS40L26_ENABLE | (CS40L26_ENABLE <<
-				CS40L26_ASP_TX2_EN_SHIFT) | (CS40L26_ENABLE <<
-				CS40L26_ASP_RX1_EN_SHIFT) | (CS40L26_ENABLE <<
-				CS40L26_ASP_RX2_EN_SHIFT);
+		asp_enables = 1 | (1 << CS40L26_ASP_TX2_EN_SHIFT)
+				| (1 << CS40L26_ASP_RX1_EN_SHIFT)
+				| (1 << CS40L26_ASP_RX2_EN_SHIFT);
 
 		ret = regmap_update_bits(regmap, CS40L26_ASP_ENABLES1,
 				asp_en_mask, asp_enables);
@@ -224,6 +232,28 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 		if (ret)
 			return ret;
 
+		ret = cl_dsp_get_reg(cs40l26->dsp, "FLAGS",
+			CL_DSP_XM_UNPACKED_TYPE, CS40L26_EXT_ALGO_ID, &reg);
+		if (ret)
+			return ret;
+
+		ret = regmap_write(regmap, reg, codec->svc_for_streaming_data);
+		if (ret) {
+			dev_err(dev, "Failed to specify SVC for streaming\n");
+			return ret;
+		}
+
+		ret = cl_dsp_get_reg(cs40l26->dsp, "SOURCE_INVERT",
+			CL_DSP_XM_UNPACKED_TYPE, CS40L26_EXT_ALGO_ID, &reg);
+		if (ret)
+			return ret;
+
+		ret = regmap_write(regmap, reg, codec->invert_streaming_data);
+		if (ret) {
+			dev_err(dev, "Failed to specify SVC for streaming\n");
+			return ret;
+		}
+
 		ret = cs40l26_ack_write(cs40l26, CS40L26_DSP_VIRTUAL1_MBOX_1,
 				CS40L26_DSP_MBOX_CMD_START_I2S,
 				CS40L26_DSP_MBOX_RESET);
@@ -239,13 +269,8 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 		if (ret)
 			return ret;
 
-		asp_enables = CS40L26_DISABLE | (CS40L26_DISABLE <<
-				CS40L26_ASP_TX2_EN_SHIFT) | (CS40L26_DISABLE <<
-				CS40L26_ASP_RX1_EN_SHIFT) | (CS40L26_DISABLE <<
-				CS40L26_ASP_RX2_EN_SHIFT);
-
 		ret = regmap_update_bits(regmap, CS40L26_ASP_ENABLES1,
-				asp_en_mask, asp_enables);
+				asp_en_mask, 0);
 		if (ret) {
 			dev_err(dev, "Failed to clear ASPTX1 input\n");
 			return ret;
@@ -263,6 +288,83 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 
 	return ret;
 }
+
+static int cs40l26_svc_for_streaming_data_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+
+	mutex_lock(&cs40l26->lock);
+
+	if (codec->svc_for_streaming_data)
+		ucontrol->value.enumerated.item[0] = 1;
+	else
+		ucontrol->value.enumerated.item[0] = 0;
+
+	mutex_unlock(&cs40l26->lock);
+
+	return 0;
+}
+
+static int cs40l26_svc_for_streaming_data_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+
+	mutex_lock(&cs40l26->lock);
+
+	if (ucontrol->value.enumerated.item[0])
+		codec->svc_for_streaming_data = true;
+	else
+		codec->svc_for_streaming_data = false;
+
+	mutex_unlock(&cs40l26->lock);
+
+	return 0;
+}
+
+static int cs40l26_invert_streaming_data_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+
+	mutex_lock(&cs40l26->lock);
+
+	if (codec->invert_streaming_data)
+		ucontrol->value.enumerated.item[0] = 1;
+	else
+		ucontrol->value.enumerated.item[0] = 0;
+
+	mutex_unlock(&cs40l26->lock);
+
+	return 0;
+}
+
+static int cs40l26_invert_streaming_data_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+
+	mutex_lock(&cs40l26->lock);
+
+	if (ucontrol->value.enumerated.item[0])
+		codec->invert_streaming_data = true;
+	else
+		codec->invert_streaming_data = false;
+
+	mutex_unlock(&cs40l26->lock);
+
+	return 0;
+}
+
 
 static int cs40l26_tuning_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
@@ -302,7 +404,7 @@ static int cs40l26_tuning_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int cs40l26_volume_get(struct snd_kcontrol *kcontrol,
+static int cs40l26_a2h_volume_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct cs40l26_codec *codec =
@@ -321,17 +423,9 @@ static int cs40l26_volume_get(struct snd_kcontrol *kcontrol,
 	pm_runtime_get_sync(dev);
 
 	ret = regmap_read(regmap, reg, &val);
-	if (ret) {
+	if (ret)
 		dev_err(dev, "Failed to get VOLUMELEVEL\n");
-		goto err_pm;
-	}
 
-	if (val == CS40L26_VOLUME_MAX)
-		val = CS40L26_VOLUME_MAX_STEPS;
-	else
-		val /= CS40L26_VOLUME_STEP_SIZE;
-
-err_pm:
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
@@ -340,7 +434,7 @@ err_pm:
 	return ret;
 }
 
-static int cs40l26_volume_put(struct snd_kcontrol *kcontrol,
+static int cs40l26_a2h_volume_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct cs40l26_codec *codec =
@@ -356,11 +450,12 @@ static int cs40l26_volume_put(struct snd_kcontrol *kcontrol,
 	if (ret)
 		return ret;
 
-	val = ucontrol->value.integer.value[0];
-	if (val == CS40L26_VOLUME_MAX_STEPS)
-		val = CS40L26_VOLUME_MAX;
+	if (ucontrol->value.integer.value[0] > CS40L26_A2H_VOLUME_MAX)
+		val = CS40L26_A2H_VOLUME_MAX;
+	else if (ucontrol->value.integer.value[0] < 0)
+		val = 0;
 	else
-		val *= CS40L26_VOLUME_STEP_SIZE;
+		val = ucontrol->value.integer.value[0];
 
 	pm_runtime_get_sync(dev);
 
@@ -377,8 +472,14 @@ static int cs40l26_volume_put(struct snd_kcontrol *kcontrol,
 static const struct snd_kcontrol_new cs40l26_controls[] = {
 	SOC_SINGLE_EXT("A2H Tuning", 0, 0, CS40L26_A2H_MAX_TUNINGS, 0,
 			cs40l26_tuning_get, cs40l26_tuning_put),
-	SOC_SINGLE_EXT("A2H Volume", 0, 0, CS40L26_VOLUME_MAX_STEPS, 0,
-			cs40l26_volume_get, cs40l26_volume_put),
+	SOC_SINGLE_EXT("A2H Volume", 0, 0, CS40L26_A2H_VOLUME_MAX, 0,
+			cs40l26_a2h_volume_get, cs40l26_a2h_volume_put),
+	SOC_SINGLE_EXT("SVC for streaming data", 0, 0, 1, 0,
+			cs40l26_svc_for_streaming_data_get,
+			cs40l26_svc_for_streaming_data_put),
+	SOC_SINGLE_EXT("Invert streaming data", 0, 0, 1, 0,
+			cs40l26_invert_streaming_data_get,
+			cs40l26_invert_streaming_data_put),
 };
 
 static const char * const cs40l26_out_mux_texts[] = { "Off", "PCM", "A2H" };
