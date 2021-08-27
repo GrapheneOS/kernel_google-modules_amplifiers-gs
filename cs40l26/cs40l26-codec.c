@@ -469,17 +469,44 @@ static int cs40l26_a2h_volume_put(struct snd_kcontrol *kcontrol,
 	return ret;
 }
 
+static int cs40l26_slots_get(
+	struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+{
+
+	struct cs40l26_codec *codec = snd_soc_component_get_drvdata(
+		snd_soc_kcontrol_component(kcontrol));
+
+	ucontrol->value.integer.value[0] = codec->tdm_slot[0];
+	ucontrol->value.integer.value[1] = codec->tdm_slot[1];
+
+	return 0;
+}
+
+static int cs40l26_slots_put(
+	struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec = snd_soc_component_get_drvdata(
+		snd_soc_kcontrol_component(kcontrol));
+
+	codec->tdm_slot[0] = ucontrol->value.integer.value[0];
+	codec->tdm_slot[1] = ucontrol->value.integer.value[1];
+
+	return 0;
+}
+
 static const struct snd_kcontrol_new cs40l26_controls[] = {
 	SOC_SINGLE_EXT("A2H Tuning", 0, 0, CS40L26_A2H_MAX_TUNINGS, 0,
-			cs40l26_tuning_get, cs40l26_tuning_put),
+		cs40l26_tuning_get, cs40l26_tuning_put),
 	SOC_SINGLE_EXT("A2H Volume", 0, 0, CS40L26_A2H_VOLUME_MAX, 0,
-			cs40l26_a2h_volume_get, cs40l26_a2h_volume_put),
+		cs40l26_a2h_volume_get, cs40l26_a2h_volume_put),
 	SOC_SINGLE_EXT("SVC for streaming data", 0, 0, 1, 0,
-			cs40l26_svc_for_streaming_data_get,
-			cs40l26_svc_for_streaming_data_put),
+		cs40l26_svc_for_streaming_data_get,
+		cs40l26_svc_for_streaming_data_put),
 	SOC_SINGLE_EXT("Invert streaming data", 0, 0, 1, 0,
-			cs40l26_invert_streaming_data_get,
-			cs40l26_invert_streaming_data_put),
+		cs40l26_invert_streaming_data_get,
+		cs40l26_invert_streaming_data_put),
+	SOC_DOUBLE_EXT("RX Slots", 0, 0, 1, 63, 0, cs40l26_slots_get,
+		cs40l26_slots_put),
 };
 
 static const char * const cs40l26_out_mux_texts[] = { "Off", "PCM", "A2H" };
@@ -646,37 +673,8 @@ err_pm:
 	return ret;
 }
 
-static int cs40l26_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
-		unsigned int rx_mask, int slots, int slot_width)
-{
-	struct cs40l26_codec *codec =
-			snd_soc_component_get_drvdata(dai->component);
-
-	if (dai->id != 0) {
-		dev_err(codec->dev, "Invalid DAI ID: %d\n", dai->id);
-		return -EINVAL;
-	}
-
-	codec->tdm_width = slot_width;
-	codec->tdm_slots = slots;
-
-	/* Reset to slots 0,1 if TDM is being disabled, and catch the case
-	 * where both RX1 and RX2 would be set to slot 0 since that causes
-	 * hardware to flag an error
-	 */
-	if (!slots || rx_mask == 0x1)
-		rx_mask = 0x3;
-
-	codec->tdm_slot[0] = ffs(rx_mask) - 1;
-	rx_mask &= ~(1 << codec->tdm_slot[0]);
-	codec->tdm_slot[1] = ffs(rx_mask) - 1;
-
-	return 0;
-}
-
 static const struct snd_soc_dai_ops cs40l26_dai_ops = {
 	.set_fmt = cs40l26_set_dai_fmt,
-	.set_tdm_slot = cs40l26_set_tdm_slot,
 	.hw_params = cs40l26_pcm_hw_params,
 };
 
@@ -710,8 +708,8 @@ static int cs40l26_codec_probe(struct snd_soc_component *component)
 	/* Default audio SCLK frequency */
 	codec->sysclk_rate = CS40L26_PLL_CLK_FRQ1;
 
-	codec->tdm_slot[0] = 0;
-	codec->tdm_slot[1] = 1;
+	codec->tdm_slot[0] = 2;
+	codec->tdm_slot[1] = 3;
 
 	return 0;
 }
