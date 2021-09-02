@@ -10,10 +10,6 @@ load("//build/kleaf:kernel.bzl", "kernel_module")
 
 kernel_module(
     name = "drv2624.cloudripper",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-    ]),
     outs = [
         "drv2624.ko",
     ],

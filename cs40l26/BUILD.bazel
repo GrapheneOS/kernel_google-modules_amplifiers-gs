@@ -10,10 +10,6 @@ load("//build/kleaf:kernel.bzl", "kernel_module")
 
 kernel_module(
     name = "cs40l26.cloudripper",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-    ]),
     outs = [
         "cl_dsp.ko",
         "input-cs40l26-i2c.ko",

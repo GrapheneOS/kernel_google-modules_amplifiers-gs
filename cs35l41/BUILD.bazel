@@ -10,15 +10,13 @@ load("//build/kleaf:kernel.bzl", "kernel_module")
 
 kernel_module(
     name = "cs35l41.cloudripper",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-    ]),
     outs = [
         "snd-soc-cs35l41.ko",
         "snd-soc-cs35l41-i2c.ko",
         "snd-soc-cs35l41-spi.ko",
-        "snd-soc-wm-adsp.ko",
+
+        # Conflicts with cs35l45. The one in cs35l45 takes priority.
+        # "snd-soc-wm-adsp.ko",
     ],
     kernel_build = "//private/gs-google:cloudripper",
     visibility = [
