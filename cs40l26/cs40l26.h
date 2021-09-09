@@ -192,6 +192,7 @@
 #define CS40L26_SPKMON_RATE_SEL			0x4004
 #define CS40L26_MONITOR_FILT				0x4008
 #define CS40L26_IMON_COMP				0x4010
+#define CS40L26_SPKMON_VMON_DEC_OUT_DATA		0x41B4
 #define CS40L26_WARN_LIMIT_THRESHOLD			0x4220
 #define CS40L26_CONFIGURATION				0x4224
 #define CS40L26_STATUS					0x4300
@@ -645,6 +646,10 @@
 #define CS40L26_DSP_CCM_CORE_KILL		0x00000080
 #define CS40L26_DSP_CCM_CORE_RESET		0x00000281
 
+#define CS40L26_GLOBAL_FS_MASK			GENMASK(4, 0)
+#define CS40L26_GLOBAL_FS_48K			0x03
+#define CS40L26_GLOBAL_FS_96K			0x04
+
 #define CS40L26_MEM_RDY_MASK			BIT(1)
 #define CS40L26_MEM_RDY_SHIFT			1
 
@@ -733,7 +738,7 @@
 /* DSP mailbox controls */
 #define CS40L26_DSP_TIMEOUT_US_MIN		1000
 #define CS40L26_DSP_TIMEOUT_US_MAX		1100
-#define CS40L26_DSP_TIMEOUT_COUNT		50
+#define CS40L26_DSP_TIMEOUT_COUNT		100
 
 #define CS40L26_DSP_MBOX_RESET			0x0
 
@@ -753,6 +758,8 @@
 #define CS40L26_DSP_MBOX_CMD_OWT_RESET	0x03000009
 
 #define CS40L26_DSP_MBOX_CMD_LE_EST	0x07000004
+
+#define CS40L26_DSP_MBOX_CMD_OWT_DELETE_BASE	0x0D000000
 
 #define CS40L26_DSP_MBOX_CMD_INDEX_MASK	GENMASK(28, 24)
 #define CS40L26_DSP_MBOX_CMD_INDEX_SHIFT	24
@@ -826,7 +833,7 @@
 #define CS40L26_ROM_INDEX_END			0x01800026
 
 #define CS40L26_OWT_INDEX_START		0x01400000
-#define CS40L26_OWT_INDEX_END			0x01400005
+#define CS40L26_OWT_INDEX_END			0x01400010
 
 
 #define CS40L26_RAM_BANK_ID			0
@@ -871,16 +878,6 @@
 
 #define CS40L26_IRQ_UNMASK			0
 #define CS40L26_IRQ_MASK			1
-
-/* output */
-#define CS40L26_GLOBAL_ENABLES2_DEFAULT	0x01000000
-#define CS40L26_BST_CTRL_DEFAULT		0x000000AA
-#define CS40L26_DACPCM1_INPUT_DEFAULT		0x00000032
-#define CS40L26_ASP_ENABLES1_DEFAULT		0x00070003
-#define CS40L26_ASP_CTRL2_DEFAULT		0x20200011
-#define CS40L26_DSP1RX5_INPUT_DEFAULT		0x00000009
-
-#define CS40L26_NUM_OUTPUT_SETUP_WRITES	3
 
 /* temp monitoring */
 #define CS40L26_TEMPMON_EN_MASK		BIT(10)
@@ -960,19 +957,19 @@
 #define CS40L26_VXBR_REL_RATE_SHIFT		21
 
 /* audio */
-#define CS40L26_PLL_CLK_CFG0			0x00
-#define CS40L26_PLL_CLK_CFG1			0x1B
-#define CS40L26_PLL_CLK_CFG2			0x21
-#define CS40L26_PLL_CLK_CFG3			0x28
-#define CS40L26_PLL_CLK_CFG4			0x30
-#define CS40L26_PLL_CLK_CFG5			0x33
+#define CS40L26_PLL_CLK_CFG_32768		0x00
+#define CS40L26_PLL_CLK_CFG_1536000		0x1B
+#define CS40L26_PLL_CLK_CFG_3072000		0x21
+#define CS40L26_PLL_CLK_CFG_6144000		0x28
+#define CS40L26_PLL_CLK_CFG_9600000		0x30
+#define CS40L26_PLL_CLK_CFG_12288000		0x33
 
-#define CS40L26_PLL_CLK_FRQ0			32768
-#define CS40L26_PLL_CLK_FRQ1			1536000
-#define CS40L26_PLL_CLK_FRQ2			3072000
-#define CS40L26_PLL_CLK_FRQ3			6144000
-#define CS40L26_PLL_CLK_FRQ4			9600000
-#define CS40L26_PLL_CLK_FRQ5			12288000
+#define CS40L26_PLL_CLK_FRQ_32768		32768
+#define CS40L26_PLL_CLK_FRQ_1536000		1536000
+#define CS40L26_PLL_CLK_FRQ_3072000		3072000
+#define CS40L26_PLL_CLK_FRQ_6144000		6144000
+#define CS40L26_PLL_CLK_FRQ_9600000		9600000
+#define CS40L26_PLL_CLK_FRQ_12288000		12288000
 
 #define CS40L26_PLL_CLK_SEL_BCLK		0x0
 #define CS40L26_PLL_CLK_SEL_FSYNC		0x1
@@ -982,6 +979,7 @@
 #define CS40L26_PLL_CLK_CFG_MASK		GENMASK(5, 0)
 
 #define CS40L26_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
+#define CS40L26_RATES	(SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000)
 
 #define CS40L26_ASP_RX_WIDTH_MASK		GENMASK(31, 24)
 #define CS40L26_ASP_RX_WIDTH_SHIFT		24
@@ -1060,12 +1058,14 @@
 #define CS40L26_CLASS_H_EN_SHIFT	4
 
 #define CS40L26_BST_CTL_SEL_MASK	GENMASK(1, 0)
-#define CS40L26_BST_CTL_SEL_FIXED	0x0
-#define CS40L26_BST_CTL_SEL_CLASSH	0x1
 
 #define CS40L26_A2H_MAX_TUNINGS	5
 
 #define CS40L26_A2H_VOLUME_MAX		0x7FFFFF
+
+#define CS40L26_VMON_DEC_OUT_DATA_MASK	GENMASK(23, 0)
+#define CS40L26_VMON_OVFL_FLAG_MASK	BIT(31)
+#define CS40L26_VMON_DEC_OUT_DATA_MAX	CS40L26_VMON_DEC_OUT_DATA_MASK
 
 /* OWT */
 #define CS40L26_WT_STR_MAX_LEN			512
@@ -1078,11 +1078,9 @@
 #define CS40L26_WT_INDEF_TIME_VAL		0xFFFF
 #define CS40L26_WT_MAX_TIME_VAL		16383 /* ms */
 
-#define CS40L26_WT_TERM_SIZE			4
-#define CS40L26_WT_WLEN_TERM_SIZE		8
-#define CS40L26_WT_HEADER_TERM			0xFFFFFF
-#define CS40L26_WT_HEADER_OFFSET		4
-#define CS40L26_WT_HEADER_DEFAULT_FLAGS	0x0000
+#define CS40L26_WT_WLEN_SIZE			4
+#define CS40L26_WT_HEADER_OFFSET		3
+#define CS40L26_WT_HEADER_DEFAULT_FLAGS		0x0000
 
 #define CS40L26_WT_TYPE10_COMP_SEG_LEN_MAX	20
 
@@ -1289,6 +1287,13 @@ struct cs40l26_platform_data {
 	u32 svc_le_is_valid;
 };
 
+struct cs40l26_owt {
+	int effect_id;
+	u32 wlength;
+	u32 trigger_index;
+	struct list_head list;
+};
+
 struct cs40l26_private {
 	struct device *dev;
 	struct regmap *regmap;
@@ -1324,12 +1329,14 @@ struct cs40l26_private {
 	u8 last_wksrc_pol;
 	u8 wksrc_sts;
 	u32 event_count;
-	u32 owt_wlength;
+	struct list_head owt_head;
 	int num_owt_effects;
 	int cal_requested;
 	u16 gain_pct;
 	u32 event_map_base;
 	struct cs40l26_svc_le *svc_le;
+	struct workqueue_struct *asp_workqueue;
+	struct work_struct asp_work;
 };
 
 struct cs40l26_codec {
@@ -1346,6 +1353,7 @@ struct cs40l26_codec {
 	int tdm_slot[2];
 	bool svc_for_streaming_data;
 	bool invert_streaming_data;
+	bool bypass_dsp;
 };
 
 struct cs40l26_pll_sysclk_config {
@@ -1354,6 +1362,8 @@ struct cs40l26_pll_sysclk_config {
 };
 
 /* exported function prototypes */
+int cs40l26_get_num_waves(struct cs40l26_private *cs40l26, u32 *num_waves);
+void cs40l26_asp_worker(struct work_struct *work);
 int cs40l26_fw_swap(struct cs40l26_private *cs40l26, u32 id);
 void cs40l26_vibe_state_set(struct cs40l26_private *cs40l26,
 		enum cs40l26_vibe_state);
