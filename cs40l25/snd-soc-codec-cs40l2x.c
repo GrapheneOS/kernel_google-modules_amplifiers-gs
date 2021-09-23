@@ -130,8 +130,7 @@ static int cs40l2x_swap_ext_clk(struct cs40l2x_codec *priv,
 {
 	struct device *dev = priv->dev;
 	struct regmap *regmap = priv->regmap;
-	struct cs40l2x_private *core = priv->core;
-	int clk_cfg, ret;
+	int clk_cfg;
 
 	if (src == CS40L2X_32KHZ_CLK)
 		clk_cfg = cs40l2x_get_clk_config(CS40L2X_MCLK_FREQ);
@@ -142,11 +141,6 @@ static int cs40l2x_swap_ext_clk(struct cs40l2x_codec *priv,
 		dev_err(dev, "Invalid SYS Clock Frequency\n");
 		return -EINVAL;
 	}
-
-	ret = cs40l2x_ack_write(core, CS40L2X_MBOX_POWERCONTROL,
-				CS40L2X_PWRCTL_FORCE_STBY, CS40L2X_PWRCTL_NONE);
-	if (ret)
-		return ret;
 
 	regmap_update_bits(regmap, CS40L2X_PLL_CLK_CTRL,
 			   CS40L2X_PLL_OPEN_LOOP_MASK,
@@ -173,8 +167,7 @@ static int cs40l2x_swap_ext_clk(struct cs40l2x_codec *priv,
 
 	usleep_range(1000, 1500);
 
-	return cs40l2x_ack_write(core, CS40L2X_MBOX_POWERCONTROL,
-				 CS40L2X_PWRCTL_WAKE, CS40L2X_PWRCTL_NONE);
+	return 0;
 }
 
 static int cs40l2x_clk_en(struct snd_soc_dapm_widget *w,
