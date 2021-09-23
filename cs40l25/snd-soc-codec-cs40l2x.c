@@ -191,10 +191,8 @@ static int cs40l2x_clk_en(struct snd_soc_dapm_widget *w,
 		dev_info(dev, "%s: SND_SOC_DAPM_POST_PMU\n", __func__);
 		mutex_lock(&core->lock);
 		core->a2h_enable = true;
+                cs40l2x_set_state(core, CS40L2X_VIBE_STATE_RUNNING);
 		mutex_unlock(&core->lock);
-
-		if (!completion_done(&core->hap_done))
-			wait_for_completion(&core->hap_done);
 
 		ret = cs40l2x_swap_ext_clk(priv, CS40L2X_SCLK);
 		if (ret)
@@ -208,6 +206,7 @@ static int cs40l2x_clk_en(struct snd_soc_dapm_widget *w,
 
 		mutex_lock(&core->lock);
 		core->a2h_enable = false;
+                cs40l2x_set_state(core, CS40L2X_VIBE_STATE_STOPPED);
 		mutex_unlock(&core->lock);
 		break;
 	default:

@@ -266,13 +266,14 @@ static int cs40l2x_write_pwle(struct cs40l2x_private *cs40l2x, void *buf,
 	return dspmem_chunk_bytes(&ch);
 }
 
-static void cs40l2x_set_state(struct cs40l2x_private *cs40l2x, bool state)
+void cs40l2x_set_state(struct cs40l2x_private *cs40l2x, bool state)
 {
 	if (cs40l2x->vibe_state != state) {
 		cs40l2x->vibe_state = state;
 		cs40l2x_sysfs_notify(cs40l2x, "vibe_state");
 	}
 }
+EXPORT_SYMBOL(cs40l2x_set_state);
 
 static void cs40l2x_set_gpio_event(struct cs40l2x_private *cs40l2x, bool value)
 {
