@@ -6438,86 +6438,10 @@ err_mutex:
 	return count;
 }
 
-static ssize_t cs40l2x_pwle_ramp_down_show(struct device *dev,
-					 struct device_attribute *attr,
-					 char *buf)
-{
-	struct cs40l2x_private *cs40l2x = cs40l2x_get_private(dev);
-	int ret;
-	unsigned int reg, val;
-
-	pm_runtime_get_sync(cs40l2x->dev);
-	mutex_lock(&cs40l2x->lock);
-
-	reg = cs40l2x_dsp_reg(cs40l2x, "RAMPDOWN_COEFF",
-			      CS40L2X_XM_UNPACKED_TYPE,
-				cs40l2x->fw_desc->id);
-	if (!reg) {
-		ret = -EPERM;
-		goto err_mutex;
-	}
-
-	ret = regmap_read(cs40l2x->regmap, reg, &val);
-	if (ret)
-		goto err_mutex;
-
-	/* Q0.24 format */
-	ret = snprintf(buf, PAGE_SIZE, "%u\n", val);
-
-err_mutex:
-	mutex_unlock(&cs40l2x->lock);
-	pm_runtime_mark_last_busy(cs40l2x->dev);
-	pm_runtime_put_autosuspend(cs40l2x->dev);
-
-	return ret;
-}
-
-static ssize_t cs40l2x_pwle_ramp_down_store(struct device *dev,
-					  struct device_attribute *attr,
-					  const char *buf,
-					  size_t count)
-{
-	struct cs40l2x_private *cs40l2x = cs40l2x_get_private(dev);
-	int ret;
-	unsigned int reg, val;
-
-	ret = kstrtou32(buf, 10, &val);
-	if (ret)
-		return -EINVAL;
-
-	pm_runtime_get_sync(cs40l2x->dev);
-	mutex_lock(&cs40l2x->lock);
-
-	reg = cs40l2x_dsp_reg(cs40l2x, "RAMPDOWN_COEFF",
-			      CS40L2X_XM_UNPACKED_TYPE,
-				cs40l2x->fw_desc->id);
-	if (!reg) {
-		ret = -EPERM;
-		goto err_mutex;
-	}
-
-	/* Q0.24 format */
-	/* Zero value means that PWLE Ramp down is off */
-	ret = regmap_write(cs40l2x->regmap, reg, val);
-	if (ret)
-		goto err_mutex;
-
-	ret = count;
-
-err_mutex:
-	mutex_unlock(&cs40l2x->lock);
-	pm_runtime_mark_last_busy(cs40l2x->dev);
-	pm_runtime_put_autosuspend(cs40l2x->dev);
-
-	return ret;
-}
-
 static DEVICE_ATTR(cp_trigger_index, 0660, cs40l2x_cp_trigger_index_show,
 		cs40l2x_cp_trigger_index_store);
 static DEVICE_ATTR(cp_trigger_queue, 0660, cs40l2x_cp_trigger_queue_show,
 		cs40l2x_cp_trigger_queue_store);
-static DEVICE_ATTR(pwle_ramp_down, 0660, cs40l2x_pwle_ramp_down_show,
-		cs40l2x_pwle_ramp_down_store);
 static DEVICE_ATTR(cp_trigger_duration, 0660, cs40l2x_cp_trigger_duration_show,
 		NULL);
 static DEVICE_ATTR(cp_trigger_q_sub, 0660, cs40l2x_cp_trigger_q_sub_show,
@@ -6732,7 +6656,6 @@ static struct attribute *cs40l2x_dev_attrs[] = {
 	&dev_attr_virtual_pwle_indexes.attr,
 	&dev_attr_available_pwle_segments.attr,
 	&dev_attr_boost_ipk.attr,
-	&dev_attr_pwle_ramp_down.attr,
 	NULL,
 };
 
