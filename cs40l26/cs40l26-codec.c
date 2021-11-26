@@ -101,9 +101,12 @@ static int cs40l26_clk_en(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		mutex_lock(&cs40l26->lock);
-		cs40l26->asp_enable = true;
-		cs40l26_vibe_state_set(cs40l26, CS40L26_VIBE_STATE_ASP);
+		cs40l26_vibe_state_update(cs40l26,
+					CS40L26_VIBE_STATE_EVENT_ASP_START);
+		ret = cs40l26_asp_start(cs40l26);
 		mutex_unlock(&cs40l26->lock);
+		if (ret)
+			return ret;
 
 		ret = cs40l26_swap_ext_clk(codec, CS40L26_PLL_REFCLK_BCLK);
 		if (ret)
@@ -115,8 +118,8 @@ static int cs40l26_clk_en(struct snd_soc_dapm_widget *w,
 			return ret;
 
 		mutex_lock(&cs40l26->lock);
-		cs40l26->asp_enable = false;
-		cs40l26_vibe_state_set(cs40l26, CS40L26_VIBE_STATE_STOPPED);
+		cs40l26_vibe_state_update(cs40l26,
+					CS40L26_VIBE_STATE_EVENT_ASP_STOP);
 		mutex_unlock(&cs40l26->lock);
 
 		break;
@@ -162,10 +165,11 @@ static int cs40l26_a2h_ev(struct snd_soc_dapm_widget *w,
 			}
 
 			ret = cl_dsp_coeff_file_parse(cs40l26->dsp, fw);
+			release_firmware(fw);
 			if (ret)
 				return ret;
+
 			codec->tuning_prev = codec->tuning;
-			release_firmware(fw);
 
 			ret = cs40l26_ack_write(cs40l26,
 					CS40L26_DSP_VIRTUAL1_MBOX_1,
@@ -245,15 +249,13 @@ static int cs40l26_pcm_ev(struct snd_soc_dapm_widget *w,
 		ret = cl_dsp_get_reg(cs40l26->dsp, "SOURCE_INVERT",
 			CL_DSP_XM_UNPACKED_TYPE, CS40L26_EXT_ALGO_ID, &reg);
 		if (ret)
-			return ret;
+			goto err_mutex;
 
 		ret = regmap_write(regmap, reg, codec->invert_streaming_data);
 		if (ret) {
 			dev_err(dev, "Failed to specify SVC for streaming\n");
 			goto err_mutex;
 		}
-
-		queue_work(cs40l26->asp_workqueue, &cs40l26->asp_work);
 
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
@@ -561,6 +563,74 @@ static int cs40l26_slots_put(
 	return 0;
 }
 
+static int cs40l26_a2h_delay_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+	struct regmap *regmap = cs40l26->regmap;
+	struct device *dev = cs40l26->dev;
+	unsigned int val = 0, reg;
+	int ret;
+
+	ret = cl_dsp_get_reg(cs40l26->dsp, "LRADELAYSAMPS",
+			CL_DSP_XM_UNPACKED_TYPE, CS40L26_A2H_ALGO_ID, &reg);
+	if (ret)
+		return ret;
+
+	pm_runtime_get_sync(dev);
+
+	ret = regmap_read(regmap, reg, &val);
+	if (ret) {
+		dev_err(dev, "Failed to get LRADELAYSAMPS\n");
+		goto err;
+	}
+
+	ucontrol->value.integer.value[0] = val;
+
+err:
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return ret;
+}
+
+static int cs40l26_a2h_delay_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs40l26_codec *codec =
+	snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	struct cs40l26_private *cs40l26 = codec->core;
+	struct regmap *regmap = cs40l26->regmap;
+	struct device *dev = cs40l26->dev;
+	unsigned int val = 0, reg;
+	int ret;
+
+	ret = cl_dsp_get_reg(cs40l26->dsp, "LRADELAYSAMPS",
+			CL_DSP_XM_UNPACKED_TYPE, CS40L26_A2H_ALGO_ID, &reg);
+	if (ret)
+		return ret;
+
+	if (ucontrol->value.integer.value[0] > CS40L26_A2H_DELAY_MAX)
+		val = CS40L26_A2H_DELAY_MAX;
+	else if (ucontrol->value.integer.value[0] < 0)
+		val = 0;
+	else
+		val = ucontrol->value.integer.value[0];
+
+	pm_runtime_get_sync(dev);
+
+	ret = regmap_write(regmap, reg, val);
+	if (ret)
+		dev_err(dev, "Failed to set LRADELAYSAMPS\n");
+
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return ret;
+}
+
 static const struct snd_kcontrol_new cs40l26_controls[] = {
 	SOC_SINGLE_EXT("A2H Tuning", 0, 0, CS40L26_A2H_MAX_TUNINGS, 0,
 			cs40l26_tuning_get, cs40l26_tuning_put),
@@ -576,6 +646,8 @@ static const struct snd_kcontrol_new cs40l26_controls[] = {
 			cs40l26_i2s_vmon_get, NULL),
 	SOC_SINGLE_EXT("DSP Bypass", 0, 0, 1, 0, cs40l26_bypass_get,
 			cs40l26_bypass_put),
+	SOC_SINGLE_EXT("A2H Delay", 0, 0, CS40L26_A2H_DELAY_MAX, 0,
+			cs40l26_a2h_delay_get, cs40l26_a2h_delay_put),
 	SOC_DOUBLE_EXT("RX Slots", 0, 0, 1, 63, 0, cs40l26_slots_get,
 			cs40l26_slots_put),
 };

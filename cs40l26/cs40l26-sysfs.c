@@ -13,11 +13,10 @@
 
 #include "cs40l26.h"
 
-static ssize_t cs40l26_dsp_state_show(struct device *dev,
+static ssize_t dsp_state_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
-	char str[CS40L26_DSP_STATE_STR_LEN];
 	u8 dsp_state;
 	int ret;
 
@@ -27,32 +26,15 @@ static ssize_t cs40l26_dsp_state_show(struct device *dev,
 	if (ret)
 		return ret;
 
-	switch (dsp_state) {
-	case CS40L26_DSP_STATE_HIBERNATE:
-		strncpy(str, "Hibernate", CS40L26_DSP_STATE_STR_LEN);
-		break;
-	case CS40L26_DSP_STATE_SHUTDOWN:
-		strncpy(str, "Shutdown", CS40L26_DSP_STATE_STR_LEN);
-		break;
-	case CS40L26_DSP_STATE_STANDBY:
-		strncpy(str, "Standby", CS40L26_DSP_STATE_STR_LEN);
-		break;
-	case CS40L26_DSP_STATE_ACTIVE:
-		strncpy(str, "Active", CS40L26_DSP_STATE_STR_LEN);
-		break;
-	default:
-		dev_err(cs40l26->dev, "DSP state %u is invalid\n", dsp_state);
-		return -EINVAL;
-	}
-
 	pm_runtime_mark_last_busy(cs40l26->dev);
 	pm_runtime_put_autosuspend(cs40l26->dev);
 
-	return snprintf(buf, PAGE_SIZE, "DSP state: %s\n", str);
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			(unsigned int) (dsp_state & 0xFF));
 }
-static DEVICE_ATTR(dsp_state, 0660, cs40l26_dsp_state_show, NULL);
+static DEVICE_ATTR_RO(dsp_state);
 
-static ssize_t cs40l26_halo_heartbeat_show(struct device *dev,
+static ssize_t halo_heartbeat_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -75,31 +57,36 @@ static ssize_t cs40l26_halo_heartbeat_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", halo_heartbeat);
 }
-static DEVICE_ATTR(halo_heartbeat, 0660, cs40l26_halo_heartbeat_show, NULL);
+static DEVICE_ATTR_RO(halo_heartbeat);
 
-static ssize_t cs40l26_fw_mode_show(struct device *dev,
+static ssize_t fw_mode_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
+	int ret = 0;
+	unsigned int mode;
 
-	pm_runtime_get_sync(cs40l26->dev);
+	mutex_lock(&cs40l26->lock);
 
 	if (cs40l26->fw_mode != CS40L26_FW_MODE_ROM
 			&& cs40l26->fw_mode != CS40L26_FW_MODE_RAM) {
 		dev_err(cs40l26->dev, "Invalid firmware mode: %u\n",
 				cs40l26->fw_mode);
-		return -EINVAL;
+		ret = -EINVAL;
+	} else {
+		mode = cs40l26->fw_mode;
 	}
 
-	pm_runtime_mark_last_busy(cs40l26->dev);
-	pm_runtime_put_autosuspend(cs40l26->dev);
+	mutex_unlock(&cs40l26->lock);
 
-	return snprintf(buf, PAGE_SIZE, "Firmware is in %s mode\n",
-		cs40l26->fw_mode == CS40L26_FW_MODE_ROM ? "ROM" : "RAM");
+	if (ret)
+		return ret;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", mode);
 }
-static DEVICE_ATTR(fw_mode, 0660, cs40l26_fw_mode_show, NULL);
+static DEVICE_ATTR_RO(fw_mode);
 
-static ssize_t cs40l26_pm_timeout_ms_show(struct device *dev,
+static ssize_t pm_timeout_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -119,7 +106,7 @@ static ssize_t cs40l26_pm_timeout_ms_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%u\n", timeout_ms);
 }
 
-static ssize_t cs40l26_pm_timeout_ms_store(struct device *dev,
+static ssize_t pm_timeout_ms_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -142,44 +129,23 @@ static ssize_t cs40l26_pm_timeout_ms_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(pm_timeout_ms, 0660, cs40l26_pm_timeout_ms_show,
-		cs40l26_pm_timeout_ms_store);
+static DEVICE_ATTR_RW(pm_timeout_ms);
 
-static ssize_t cs40l26_vibe_state_show(struct device *dev,
+static ssize_t vibe_state_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
-	int ret = 0;
-	char str[10];
+	unsigned int state;
 
 	mutex_lock(&cs40l26->lock);
-
-	switch (cs40l26->vibe_state) {
-	case CS40L26_VIBE_STATE_STOPPED:
-		strncpy(str, "Stopped", 10);
-		break;
-	case CS40L26_VIBE_STATE_HAPTIC:
-		strncpy(str, "Haptic", 10);
-		break;
-	case CS40L26_VIBE_STATE_ASP:
-		strncpy(str, "ASP", 10);
-		break;
-	default:
-		dev_err(cs40l26->dev, "Invalid vibe state: %u\n",
-				cs40l26->vibe_state);
-		ret = -EINVAL;
-	}
-
+	state = cs40l26->vibe_state;
 	mutex_unlock(&cs40l26->lock);
 
-	if (ret)
-		return ret;
-	else
-		return snprintf(buf, PAGE_SIZE, "Vibe state: %s\n", str);
+	return snprintf(buf, PAGE_SIZE, "%u\n", state);
 }
-static DEVICE_ATTR(vibe_state, 0660, cs40l26_vibe_state_show, NULL);
+static DEVICE_ATTR_RO(vibe_state);
 
-static ssize_t cs40l26_pseq_show(struct device *dev,
+static ssize_t power_on_seq_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -210,9 +176,9 @@ static ssize_t cs40l26_pseq_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", cs40l26->pseq_num_ops);
 }
-static DEVICE_ATTR(power_on_seq, 0440, cs40l26_pseq_show, NULL);
+static DEVICE_ATTR_RO(power_on_seq);
 
-static ssize_t cs40l26_owt_free_space_show(struct device *dev,
+static ssize_t owt_free_space_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -232,7 +198,7 @@ static ssize_t cs40l26_owt_free_space_show(struct device *dev,
 		goto err_pm;
 	}
 
-	ret = snprintf(buf, PAGE_SIZE, "%d\n", words * 3);
+	ret = snprintf(buf, PAGE_SIZE, "%d\n", words * CL_DSP_BYTES_PER_WORD);
 
 err_pm:
 	pm_runtime_mark_last_busy(cs40l26->dev);
@@ -240,9 +206,9 @@ err_pm:
 
 	return ret;
 }
-static DEVICE_ATTR(owt_free_space, 0440, cs40l26_owt_free_space_show, NULL);
+static DEVICE_ATTR_RO(owt_free_space);
 
-static ssize_t cs40l26_die_temp_show(struct device *dev,
+static ssize_t die_temp_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -283,9 +249,9 @@ err_pm:
 
 	return ret;
 }
-static DEVICE_ATTR(die_temp, 0440, cs40l26_die_temp_show, NULL);
+static DEVICE_ATTR_RO(die_temp);
 
-static ssize_t cs40l26_num_waves_show(struct device *dev,
+static ssize_t num_waves_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -306,10 +272,10 @@ err_pm:
 
 	return ret;
 }
-static DEVICE_ATTR(num_waves, 0440, cs40l26_num_waves_show, NULL);
+static DEVICE_ATTR_RO(num_waves);
 
 /* boost_disable_delay is in units of 125us, e.g. 8 ->  1ms */
-static ssize_t cs40l26_boost_disable_delay_show(struct device *dev,
+static ssize_t boost_disable_delay_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -336,7 +302,7 @@ err_pm:
 	return ret;
 }
 
-static ssize_t cs40l26_boost_disable_delay_store(struct device *dev,
+static ssize_t boost_disable_delay_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -370,10 +336,9 @@ err_pm:
 	else
 		return count;
 }
-static DEVICE_ATTR(boost_disable_delay, 0660, cs40l26_boost_disable_delay_show,
-		cs40l26_boost_disable_delay_store);
+static DEVICE_ATTR_RW(boost_disable_delay);
 
-static ssize_t cs40l26_f0_offset_show(struct device *dev,
+static ssize_t f0_offset_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -394,7 +359,7 @@ static ssize_t cs40l26_f0_offset_show(struct device *dev,
 	if (ret)
 		goto err_mutex;
 
-	ret = snprintf(buf, PAGE_SIZE, "%d\n", val);
+	ret = snprintf(buf, PAGE_SIZE, "%u\n", val);
 
 err_mutex:
 	mutex_unlock(&cs40l26->lock);
@@ -404,7 +369,7 @@ err_mutex:
 	return ret;
 }
 
-static ssize_t cs40l26_f0_offset_store(struct device *dev,
+static ssize_t f0_offset_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -440,8 +405,44 @@ err_mutex:
 
 	return ret;
 }
-static DEVICE_ATTR(f0_offset, 0660, cs40l26_f0_offset_show,
-		cs40l26_f0_offset_store);
+static DEVICE_ATTR_RW(f0_offset);
+
+static ssize_t delay_before_stop_playback_us_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
+	int ret;
+
+	mutex_lock(&cs40l26->lock);
+
+	ret = snprintf(buf, PAGE_SIZE, "%d\n",
+					cs40l26->delay_before_stop_playback_us);
+
+	mutex_unlock(&cs40l26->lock);
+
+	return ret;
+}
+
+static ssize_t delay_before_stop_playback_us_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
+	u32 val;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &val);
+	if (ret)
+		return -EINVAL;
+
+	mutex_lock(&cs40l26->lock);
+
+	cs40l26->delay_before_stop_playback_us = val;
+
+	mutex_unlock(&cs40l26->lock);
+
+	return count;
+}
+static DEVICE_ATTR_RW(delay_before_stop_playback_us);
 
 static struct attribute *cs40l26_dev_attrs[] = {
 	&dev_attr_num_waves.attr,
@@ -455,6 +456,7 @@ static struct attribute *cs40l26_dev_attrs[] = {
 	&dev_attr_vibe_state.attr,
 	&dev_attr_boost_disable_delay.attr,
 	&dev_attr_f0_offset.attr,
+	&dev_attr_delay_before_stop_playback_us.attr,
 	NULL,
 };
 
@@ -463,7 +465,7 @@ struct attribute_group cs40l26_dev_attr_group = {
 	.attrs = cs40l26_dev_attrs,
 };
 
-static ssize_t cs40l26_trigger_calibration_store(struct device *dev,
+static ssize_t trigger_calibration_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -503,8 +505,9 @@ static ssize_t cs40l26_trigger_calibration_store(struct device *dev,
 
 	return ret;
 }
+static DEVICE_ATTR_WO(trigger_calibration);
 
-static ssize_t cs40l26_f0_measured_show(struct device *dev,
+static ssize_t f0_measured_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -534,8 +537,9 @@ err_mutex:
 	else
 		return snprintf(buf, PAGE_SIZE, "%08X\n", f0_measured);
 }
+static DEVICE_ATTR_RO(f0_measured);
 
-static ssize_t cs40l26_q_measured_show(struct device *dev,
+static ssize_t q_measured_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -565,8 +569,9 @@ err_mutex:
 	else
 		return snprintf(buf, PAGE_SIZE, "%08X\n", q_measured);
 }
+static DEVICE_ATTR_RO(q_measured);
 
-static ssize_t cs40l26_redc_measured_show(struct device *dev,
+static ssize_t redc_measured_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -596,9 +601,10 @@ err_mutex:
 	else
 		return snprintf(buf, PAGE_SIZE, "%08X\n", redc_measured);
 }
+static DEVICE_ATTR_RO(redc_measured);
 
-static ssize_t cs40l26_redc_est_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t redc_est_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	int ret;
@@ -628,8 +634,8 @@ err_mutex:
 		return snprintf(buf, PAGE_SIZE, "%08X\n", redc_est);
 }
 
-static ssize_t cs40l26_redc_est_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t redc_est_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	int ret;
@@ -664,8 +670,9 @@ err_mutex:
 	else
 		return count;
 }
+static DEVICE_ATTR_RW(redc_est);
 
-static ssize_t cs40l26_f0_stored_show(struct device *dev,
+static ssize_t f0_stored_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -696,7 +703,7 @@ err_mutex:
 		return snprintf(buf, PAGE_SIZE, "%08X\n", f0_stored);
 }
 
-static ssize_t cs40l26_f0_stored_store(struct device *dev,
+static ssize_t f0_stored_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -735,9 +742,10 @@ err_mutex:
 	else
 		return count;
 }
+static DEVICE_ATTR_RW(f0_stored);
 
-static ssize_t cs40l26_q_stored_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t q_stored_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	int ret;
@@ -767,8 +775,8 @@ err_mutex:
 		return snprintf(buf, PAGE_SIZE, "%08X\n", q_stored);
 }
 
-static ssize_t cs40l26_q_stored_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t q_stored_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	int ret;
@@ -804,8 +812,9 @@ err_mutex:
 	else
 		return count;
 }
+static DEVICE_ATTR_RW(q_stored);
 
-static ssize_t cs40l26_redc_stored_show(struct device *dev,
+static ssize_t redc_stored_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -836,7 +845,7 @@ err_mutex:
 		return snprintf(buf, PAGE_SIZE, "%08X\n", redc_stored);
 }
 
-static ssize_t cs40l26_redc_stored_store(struct device *dev,
+static ssize_t redc_stored_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -872,8 +881,9 @@ err_mutex:
 	else
 		return count;
 }
+static DEVICE_ATTR_RW(redc_stored);
 
-static ssize_t cs40l26_f0_and_q_cal_time_ms_show(struct device *dev,
+static ssize_t f0_and_q_cal_time_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -916,8 +926,9 @@ err_mutex:
 	else
 		return snprintf(buf, PAGE_SIZE, "%d\n", f0_and_q_cal_time_ms);
 }
+static DEVICE_ATTR_RO(f0_and_q_cal_time_ms);
 
-static ssize_t cs40l26_redc_cal_time_ms_show(struct device *dev,
+static ssize_t redc_cal_time_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	/* FIRMWARE_STUMPY_CALIB_REDC_PLAYTIME_MS + SVC_INIT + buffer */
@@ -950,8 +961,9 @@ err_mutex:
 	else
 		return snprintf(buf, PAGE_SIZE, "%d\n", redc_total_cal_time_ms);
 }
+static DEVICE_ATTR_RO(redc_cal_time_ms);
 
-static ssize_t cs40l26_logging_en_show(struct device *dev,
+static ssize_t logging_en_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -980,7 +992,7 @@ err_mutex:
 	return ret;
 }
 
-static ssize_t cs40l26_logging_en_store(struct device *dev,
+static ssize_t logging_en_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1050,7 +1062,9 @@ exit_mutex:
 	return count;
 }
 
-static ssize_t cs40l26_logging_max_reset_store(struct device *dev,
+static DEVICE_ATTR_RW(logging_en);
+
+static ssize_t logging_max_reset_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1074,9 +1088,10 @@ static ssize_t cs40l26_logging_max_reset_store(struct device *dev,
 
 	return count;
 }
+static DEVICE_ATTR_WO(logging_max_reset);
 
-static ssize_t cs40l26_max_bemf_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t max_bemf_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
 {
 
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1105,9 +1120,10 @@ err_mutex:
 
 	return snprintf(buf, PAGE_SIZE, "0x%06X\n", max_bemf);
 }
+static DEVICE_ATTR_RO(max_bemf);
 
-static ssize_t cs40l26_max_vbst_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static ssize_t max_vbst_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
 {
 
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1136,8 +1152,9 @@ err_mutex:
 
 	return snprintf(buf, PAGE_SIZE, "0x%06X\n", max_vbst);
 }
+static DEVICE_ATTR_RO(max_vbst);
 
-static ssize_t cs40l26_calib_fw_load_show(struct device *dev,
+static ssize_t calib_fw_load_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1146,9 +1163,9 @@ static ssize_t cs40l26_calib_fw_load_show(struct device *dev,
 	mutex_lock(&cs40l26->lock);
 
 	if (cs40l26->fw.id == CS40L26_FW_ID)
-		ret = snprintf(buf, PAGE_SIZE, "%u\n", 0);
+		ret = snprintf(buf, PAGE_SIZE, "%d\n", 0);
 	else if (cs40l26->fw.id == CS40L26_FW_CALIB_ID)
-		ret = snprintf(buf, PAGE_SIZE, "%u\n", 1);
+		ret = snprintf(buf, PAGE_SIZE, "%d\n", 1);
 	else
 		ret = -EINVAL;
 
@@ -1157,7 +1174,7 @@ static ssize_t cs40l26_calib_fw_load_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t cs40l26_calib_fw_load_store(struct device *dev,
+static ssize_t calib_fw_load_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -1177,35 +1194,7 @@ static ssize_t cs40l26_calib_fw_load_store(struct device *dev,
 
 	return ret ? ret : count;
 }
-
-static DEVICE_ATTR(calib_fw_load, 0660, cs40l26_calib_fw_load_show,
-		cs40l26_calib_fw_load_store);
-static DEVICE_ATTR(max_vbst, 0440, cs40l26_max_vbst_show, NULL);
-static DEVICE_ATTR(max_bemf, 0440, cs40l26_max_bemf_show, NULL);
-static DEVICE_ATTR(logging_max_reset,
-		0220, NULL, cs40l26_logging_max_reset_store);
-static DEVICE_ATTR(logging_en,
-		0660, cs40l26_logging_en_show, cs40l26_logging_en_store);
-static DEVICE_ATTR(trigger_calibration,
-		0220, NULL, cs40l26_trigger_calibration_store);
-static DEVICE_ATTR(f0_measured,
-		0440, cs40l26_f0_measured_show, NULL);
-static DEVICE_ATTR(q_measured,
-		0440, cs40l26_q_measured_show, NULL);
-static DEVICE_ATTR(redc_measured,
-		0440, cs40l26_redc_measured_show, NULL);
-static DEVICE_ATTR(redc_est,
-		0660, cs40l26_redc_est_show, cs40l26_redc_est_store);
-static DEVICE_ATTR(f0_stored,
-		0660, cs40l26_f0_stored_show, cs40l26_f0_stored_store);
-static DEVICE_ATTR(q_stored,
-		0660, cs40l26_q_stored_show, cs40l26_q_stored_store);
-static DEVICE_ATTR(redc_stored,
-		0660, cs40l26_redc_stored_show, cs40l26_redc_stored_store);
-static DEVICE_ATTR(f0_and_q_cal_time_ms,
-		0440, cs40l26_f0_and_q_cal_time_ms_show, NULL);
-static DEVICE_ATTR(redc_cal_time_ms,
-		0440, cs40l26_redc_cal_time_ms_show, NULL);
+static DEVICE_ATTR_RW(calib_fw_load);
 
 static struct attribute *cs40l26_dev_attrs_cal[] = {
 	&dev_attr_calib_fw_load.attr,
