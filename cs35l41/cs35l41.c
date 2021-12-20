@@ -1502,6 +1502,45 @@ static int cs35l41_put_ramp_knee_time(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int cs35l41_default_96k_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component;
+	struct cs35l41_private *cs35l41;
+
+	component = snd_soc_kcontrol_component(kcontrol);
+	cs35l41 = snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.integer.value[0] =
+		(cs35l41->reset_cache.fs_cfg == CS35L41_FS_96K);
+	return 0;
+}
+
+static int cs35l41_default_96k_put(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component;
+	struct cs35l41_private *cs35l41;
+
+	component = snd_soc_kcontrol_component(kcontrol);
+	cs35l41 = snd_soc_component_get_drvdata(component);
+
+	if (ucontrol->value.integer.value[0] < 0 ||
+	    ucontrol->value.integer.value[0] > 1)
+		return -EINVAL;
+
+	cs35l41->reset_cache.fs_cfg =
+		ucontrol->value.integer.value[0] == 1 ?
+		CS35L41_FS_96K : CS35L41_FS_48K;
+
+	regmap_update_bits(cs35l41->regmap, CS35L41_GLOBAL_CLK_CTRL,
+		CS35L41_GLOBAL_FS_MASK,
+		cs35l41->reset_cache.fs_cfg << CS35L41_GLOBAL_FS_SHIFT);
+
+	pr_info("update global fs to %d\n", cs35l41->reset_cache.fs_cfg);
+	return 0;
+}
+
 static const char * const cs35l41_output_dev_text[] = {
 	"Speaker",
 	"Receiver",
@@ -1632,6 +1671,8 @@ static const struct snd_kcontrol_new cs35l41_aud_controls[] = {
 	SOC_SINGLE_EXT("IMP", SND_SOC_NOPM, 0, 0xFFFFFFFF, 0,
 			cs35l41_imp_get, cs35l41_imp_put),
 #endif
+	SOC_SINGLE_EXT("Default 96K", SND_SOC_NOPM, 0, 1, 0,
+			cs35l41_default_96k_get, cs35l41_default_96k_put),
 };
 
 static const struct cs35l41_otp_map_element_t *cs35l41_find_otp_map(u32 otp_id)
