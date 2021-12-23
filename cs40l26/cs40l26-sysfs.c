@@ -23,14 +23,15 @@ static ssize_t dsp_state_show(struct device *dev,
 	pm_runtime_get_sync(cs40l26->dev);
 
 	ret = cs40l26_dsp_state_get(cs40l26, &dsp_state);
-	if (ret)
-		return ret;
 
 	pm_runtime_mark_last_busy(cs40l26->dev);
 	pm_runtime_put_autosuspend(cs40l26->dev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-			(unsigned int) (dsp_state & 0xFF));
+	if (ret)
+		return ret;
+	else
+		return snprintf(buf, PAGE_SIZE, "%u\n",
+				(unsigned int) (dsp_state & 0xFF));
 }
 static DEVICE_ATTR_RO(dsp_state);
 
@@ -41,19 +42,20 @@ static ssize_t halo_heartbeat_show(struct device *dev,
 	u32 reg, halo_heartbeat;
 	int ret;
 
-	pm_runtime_get_sync(cs40l26->dev);
-
 	ret = cl_dsp_get_reg(cs40l26->dsp, "HALO_HEARTBEAT",
 			CL_DSP_XM_UNPACKED_TYPE, cs40l26->fw.id, &reg);
 	if (ret)
 		return ret;
 
+	pm_runtime_get_sync(cs40l26->dev);
+
 	ret = regmap_read(cs40l26->regmap, reg, &halo_heartbeat);
-	if (ret)
-		return ret;
 
 	pm_runtime_mark_last_busy(cs40l26->dev);
 	pm_runtime_put_autosuspend(cs40l26->dev);
+
+	if (ret)
+		return ret;
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", halo_heartbeat);
 }
@@ -86,7 +88,7 @@ static ssize_t fw_mode_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(fw_mode);
 
-static ssize_t pm_timeout_ms_show(struct device *dev,
+static ssize_t pm_stdby_timeout_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -95,7 +97,7 @@ static ssize_t pm_timeout_ms_show(struct device *dev,
 
 	pm_runtime_get_sync(cs40l26->dev);
 
-	ret = cs40l26_pm_timeout_ms_get(cs40l26, &timeout_ms);
+	ret = cs40l26_pm_stdby_timeout_ms_get(cs40l26, &timeout_ms);
 
 	pm_runtime_mark_last_busy(cs40l26->dev);
 	pm_runtime_put_autosuspend(cs40l26->dev);
@@ -106,7 +108,7 @@ static ssize_t pm_timeout_ms_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%u\n", timeout_ms);
 }
 
-static ssize_t pm_timeout_ms_store(struct device *dev,
+static ssize_t pm_stdby_timeout_ms_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
@@ -114,12 +116,12 @@ static ssize_t pm_timeout_ms_store(struct device *dev,
 	int ret;
 
 	ret = kstrtou32(buf, 10, &timeout_ms);
-	if (ret || timeout_ms < CS40L26_PM_TIMEOUT_MS_MIN)
+	if (ret)
 		return -EINVAL;
 
 	pm_runtime_get_sync(cs40l26->dev);
 
-	ret = cs40l26_pm_timeout_ms_set(cs40l26, timeout_ms);
+	ret = cs40l26_pm_stdby_timeout_ms_set(cs40l26, timeout_ms);
 
 	pm_runtime_mark_last_busy(cs40l26->dev);
 	pm_runtime_put_autosuspend(cs40l26->dev);
@@ -129,7 +131,52 @@ static ssize_t pm_timeout_ms_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR_RW(pm_timeout_ms);
+static DEVICE_ATTR_RW(pm_stdby_timeout_ms);
+
+static ssize_t pm_active_timeout_ms_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
+	u32 timeout_ms;
+	int ret;
+
+	pm_runtime_get_sync(cs40l26->dev);
+
+	ret = cs40l26_pm_active_timeout_ms_get(cs40l26, &timeout_ms);
+
+	pm_runtime_mark_last_busy(cs40l26->dev);
+	pm_runtime_put_autosuspend(cs40l26->dev);
+
+	if (ret)
+		return ret;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", timeout_ms);
+}
+
+static ssize_t pm_active_timeout_ms_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
+	u32 timeout_ms;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &timeout_ms);
+	if (ret)
+		return -EINVAL;
+
+	pm_runtime_get_sync(cs40l26->dev);
+
+	ret = cs40l26_pm_active_timeout_ms_set(cs40l26, timeout_ms);
+
+	pm_runtime_mark_last_busy(cs40l26->dev);
+	pm_runtime_put_autosuspend(cs40l26->dev);
+
+	if (ret)
+		return ret;
+
+	return count;
+}
+static DEVICE_ATTR_RW(pm_active_timeout_ms);
 
 static ssize_t vibe_state_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -149,32 +196,57 @@ static ssize_t power_on_seq_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
-	struct list_head *op_head = &cs40l26->pseq_op_head;
-	u32 base = cs40l26->pseq_base;
-	int i, count = 0;
-	struct cs40l26_pseq_op *pseq_op;
+	struct cs40l26_pseq_op *op;
+	u32 addr, data, base;
+	int ret;
 
 	mutex_lock(&cs40l26->lock);
 
-	list_for_each_entry_reverse(pseq_op, op_head, list) {
-		dev_info(cs40l26->dev, "%d: Address: 0x%08X, Size: %d words\n",
-			count + 1, base + pseq_op->offset, pseq_op->size);
+	base = cs40l26->pseq_base;
 
-		for (i = 0; i < pseq_op->size; i++)
-			dev_info(cs40l26->dev, "0x%08X\n",
-					*(pseq_op->words + i));
+	list_for_each_entry_reverse(op, &cs40l26->pseq_op_head, list) {
+		switch (op->operation) {
+		case CS40L26_PSEQ_OP_WRITE_FULL:
+			addr = ((op->words[0] & 0xFFFF) << 16) |
+					((op->words[1] & 0x00FFFF00) >> 8);
+			data = ((op->words[1] & 0xFF) << 24) |
+					(op->words[2] & 0xFFFFFF);
+			break;
+		case CS40L26_PSEQ_OP_WRITE_H16:
+		case CS40L26_PSEQ_OP_WRITE_L16:
+			addr = ((op->words[0] & 0xFFFF) << 8) |
+					((op->words[1] & 0xFF0000) >> 16);
+			data = (op->words[1] & 0xFFFF);
 
-		count++;
+			if (op->operation == CS40L26_PSEQ_OP_WRITE_H16)
+				data <<= 16;
+			break;
+		case CS40L26_PSEQ_OP_WRITE_ADDR8:
+			addr = (op->words[0] & 0xFF00) >> 8;
+			data = ((op->words[0] & 0xFF) << 24) |
+					(op->words[1] & 0xFFFFFF);
+			break;
+		case CS40L26_PSEQ_OP_END:
+			addr = CS40L26_PSEQ_OP_END_ADDR;
+			data = CS40L26_PSEQ_OP_END_DATA;
+			break;
+		default:
+			dev_err(cs40l26->dev, "Unrecognized Op Code: 0x%02X\n",
+					op->operation);
+			ret = -EINVAL;
+			goto err_mutex;
+		}
+
+		dev_dbg(cs40l26->dev,
+		"0x%08x: code = 0x%02X, Addr = 0x%08X, Data = 0x%08X\n",
+		base + op->offset, op->operation, addr, data);
 	}
 
+	ret = snprintf(buf, PAGE_SIZE, "%d\n", cs40l26->pseq_num_ops);
+
+err_mutex:
 	mutex_unlock(&cs40l26->lock);
-
-	if (count != cs40l26->pseq_num_ops) {
-		dev_err(cs40l26->dev, "Malformed Power on seq.\n");
-		return -EINVAL;
-	}
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", cs40l26->pseq_num_ops);
+	return ret;
 }
 static DEVICE_ATTR_RO(power_on_seq);
 
@@ -452,7 +524,8 @@ static struct attribute *cs40l26_dev_attrs[] = {
 	&dev_attr_dsp_state.attr,
 	&dev_attr_halo_heartbeat.attr,
 	&dev_attr_fw_mode.attr,
-	&dev_attr_pm_timeout_ms.attr,
+	&dev_attr_pm_stdby_timeout_ms.attr,
+	&dev_attr_pm_active_timeout_ms.attr,
 	&dev_attr_vibe_state.attr,
 	&dev_attr_boost_disable_delay.attr,
 	&dev_attr_f0_offset.attr,
