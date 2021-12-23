@@ -2899,18 +2899,11 @@ static const char * const dapm_names[] = { "SPK", "VP", "VBST", "ISENSE",
 static void cs35l41_component_ignore_suspend(struct snd_soc_component *component)
 {
 	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
-	char dapm_name[64];
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(dapm_names); i++) {
-		if (component->name_prefix)
-			snprintf(dapm_name, sizeof(dapm_name), "%s %s",
-					component->name_prefix, dapm_names[i]);
-		else
-			snprintf(dapm_name, sizeof(dapm_name), "%s", dapm_names[i]);
-
-		pr_debug("snd_soc_dapm_ignore_suspend dapm name[%s]", dapm_name);
-		snd_soc_dapm_ignore_suspend(dapm, dapm_name);
+		pr_debug("snd_soc_dapm_ignore_suspend dapm name[%s]", dapm_names[i]);
+		snd_soc_dapm_ignore_suspend(dapm, dapm_names[i]);
 	}
 	snd_soc_dapm_sync(dapm);
 }
