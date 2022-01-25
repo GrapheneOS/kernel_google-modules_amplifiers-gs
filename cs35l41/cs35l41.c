@@ -2132,7 +2132,20 @@ static int cs35l41_main_amp_event(struct snd_soc_dapm_widget *w,
 	return ret;
 }
 
-static int cs35l41_asprx_event(struct snd_soc_dapm_widget *w,
+static void cs35l41_mute_amp(struct cs35l41_private *cs35l41)
+{
+	bool mute = !(cs35l41->asprx1_enabled || cs35l41->asprx2_enabled);
+
+	if (mute) {
+		regmap_update_bits(cs35l41->regmap, CS35L41_AMP_OUT_MUTE,
+				CS35L41_AMP_MUTE_MASK, CS35L41_AMP_MUTE_MASK);
+	} else {
+		regmap_update_bits(cs35l41->regmap, CS35L41_AMP_OUT_MUTE,
+				CS35L41_AMP_MUTE_MASK, 0);
+	}
+}
+
+static int cs35l41_asprx1_event(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_component *component =
@@ -2143,18 +2156,44 @@ static int cs35l41_asprx_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		regmap_update_bits(cs35l41->regmap, CS35L41_AMP_OUT_MUTE,
-				CS35L41_AMP_MUTE_MASK, 0);
+		cs35l41->asprx1_enabled = true;
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		regmap_update_bits(cs35l41->regmap, CS35L41_AMP_OUT_MUTE,
-				CS35L41_AMP_MUTE_MASK, CS35L41_AMP_MUTE_MASK);
+		cs35l41->asprx1_enabled = false;
 		break;
 	default:
 		dev_err(cs35l41->dev, "Invalid event = 0x%x\n", event);
 		ret = -EINVAL;
 		break;
 	}
+	if (ret == 0)
+		cs35l41_mute_amp(cs35l41);
+	return ret;
+}
+
+static int cs35l41_asprx2_event(struct snd_soc_dapm_widget *w,
+		struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *component =
+		snd_soc_dapm_to_component(w->dapm);
+	struct cs35l41_private *cs35l41 =
+		snd_soc_component_get_drvdata(component);
+	int ret = 0;
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		cs35l41->asprx2_enabled = true;
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		cs35l41->asprx2_enabled = false;
+		break;
+	default:
+		dev_err(cs35l41->dev, "Invalid event = 0x%x\n", event);
+		ret = -EINVAL;
+		break;
+	}
+	if (ret == 0)
+		cs35l41_mute_amp(cs35l41);
 	return ret;
 }
 
@@ -2168,10 +2207,10 @@ static const struct snd_soc_dapm_widget cs35l41_dapm_widgets[] = {
 				cs35l41_dsp_load_ev, SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_OUTPUT("SPK"),
 	SND_SOC_DAPM_AIF_IN_E("ASPRX1", NULL, 0, CS35L41_SP_ENABLES, 16, 0,
-				cs35l41_asprx_event,
+				cs35l41_asprx1_event,
 				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
 	SND_SOC_DAPM_AIF_IN_E("ASPRX2", NULL, 0, CS35L41_SP_ENABLES, 17, 0,
-				cs35l41_asprx_event,
+				cs35l41_asprx2_event,
 				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
 	SND_SOC_DAPM_AIF_OUT("ASPTX1", NULL, 0, CS35L41_SP_ENABLES, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("ASPTX2", NULL, 0, CS35L41_SP_ENABLES, 1, 0),
