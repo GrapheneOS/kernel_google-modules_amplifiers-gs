@@ -286,7 +286,7 @@ static int cl_dsp_coeff_header_parse(struct cl_dsp *dsp,
 
 	if (header.fw_revision != dsp->algo_info[0].rev) {
 		dev_warn(dev,
-			"Coeff. rev. 0x%06X mistmatches 0x%06X, continuing..\n",
+			"Coeff. rev. 0x%06X mismatches 0x%06X, continuing..\n",
 			header.fw_revision, dsp->algo_info[0].rev);
 	}
 
@@ -390,8 +390,9 @@ int cl_dsp_coeff_file_parse(struct cl_dsp *dsp, const struct firmware *fw)
 				goto err_free;
 			}
 
-			algo_rev =
-				CL_DSP_SHIFT_REV(data_block.header.algo_rev);
+			algo_rev = data_block.header.algo_rev >>
+					CL_DSP_REV_OFFSET_SHIFT;
+
 			if (CL_DSP_GET_MAJOR(algo_rev) !=
 				CL_DSP_GET_MAJOR(dsp->algo_info[i].rev)) {
 				dev_err(dev,
@@ -548,10 +549,10 @@ int cl_dsp_coeff_file_parse(struct cl_dsp *dsp, const struct firmware *fw)
 
 	if (wt_found) {
 		if (*wt_date != '\0')
-			strlcpy(dsp->wt_desc->wt_date, wt_date,
+			strscpy(dsp->wt_desc->wt_date, wt_date,
 					CL_DSP_WMDR_DATE_LEN);
 		else
-			strlcpy(dsp->wt_desc->wt_date,
+			strscpy(dsp->wt_desc->wt_date,
 					CL_DSP_WMDR_FILE_DATE_MISSING,
 					CL_DSP_WMDR_DATE_LEN);
 	}
