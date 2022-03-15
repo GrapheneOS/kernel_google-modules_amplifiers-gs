@@ -1144,7 +1144,8 @@ static int cs40l2x_convert_and_save_comp_data(struct cs40l2x_private *cs40l2x,
 
 	if (comp_size > (cs40l2x->comp_bytes / CS40L2X_WT_NUM_VIRT_SLOTS)) {
 		dev_err(cs40l2x->dev, "Waveform size exceeds available space\n");
-		return -ENOSPC;
+		ret = -ENOSPC;
+		goto err_free;
 	}
 
 	if (over_write)
@@ -1725,6 +1726,7 @@ static int cs40l2x_save_packed_pwle_data(struct cs40l2x_private *cs40l2x,
 
 	if (ret > (cs40l2x->comp_bytes / CS40L2X_WT_NUM_VIRT_SLOTS)) {
 		dev_err(cs40l2x->dev, "PWLE size exceeds available space\n");
+		kfree(zero_pad_data);
 		return -ENOSPC;
 	}
 
@@ -1926,7 +1928,7 @@ static ssize_t cs40l2x_pwle_store(struct device *dev,
 	bool a = false, v = false;
 	int ret;
 
-	if (count > CS40L2X_PWLE_TOTAL_VALS - 1) {
+	if (count > CS40L2X_PWLE_BYTES_MAX - 1) {
 		dev_err(dev, "PWLE string too large\n");
 		return -E2BIG;
 	}
@@ -2157,7 +2159,7 @@ static ssize_t cs40l2x_pwle_store(struct device *dev,
 
 	pwle->nsections = num_segs;
 
-	ret = strscpy_pad(cs40l2x->pwle_str, buf, CS40L2X_PWLE_TOTAL_VALS);
+	ret = strscpy_pad(cs40l2x->pwle_str, buf, CS40L2X_PWLE_BYTES_MAX);
 	if (ret == -E2BIG) {
 		goto err_exit;
         }
