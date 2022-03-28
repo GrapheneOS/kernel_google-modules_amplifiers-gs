@@ -1879,10 +1879,12 @@ static int cs40l2x_pwle_frequency_entry(struct cs40l2x_private *cs40l2x,
 		return ret;
 	}
 
-	if (cs40l2x->ext_freq_min_fw)
+	if (cs40l2x->ext_freq_min_fw) {
 		section->frequency = (val / (1000 / 4));
-	else
+		section->flags |= WT_T12_FLAG_EXT_FREQ;
+	} else {
 		section->frequency = (val / (1000 / 8)) - 400;
+	}
 
 	return ret;
 }
@@ -6900,8 +6902,8 @@ static void cs40l2x_vibe_mode_worker(struct work_struct *work)
 		if (ret)
 			goto err_exit;
 
-		ret = regmap_write(regmap, CS40L2X_DSP_VIRT1_MBOX_5,
-					CS40L2X_A2H_I2S_START);
+		ret = cs40l2x_ack_write(cs40l2x, CS40L2X_MBOX_USER_CONTROL,
+					CS40L2X_A2H_I2S_START, CS40L2X_USER_CTRL_SUCCESS);
 		if (ret)
 			goto err_exit;
 
