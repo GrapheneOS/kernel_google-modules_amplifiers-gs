@@ -176,6 +176,35 @@ int cs40l26_dsp_state_get(struct cs40l26_private *cs40l26, u8 *state)
 }
 EXPORT_SYMBOL(cs40l26_dsp_state_get);
 
+int cs40l26_set_pll_loop(struct cs40l26_private *cs40l26, unsigned int pll_loop)
+{
+	int ret, i;
+
+	if (pll_loop != CS40L26_PLL_REFCLK_SET_OPEN_LOOP &&
+			pll_loop != CS40L26_PLL_REFCLK_SET_CLOSED_LOOP) {
+		dev_err(cs40l26->dev, "Invalid PLL Loop setting: %u\n",
+				pll_loop);
+		return -EINVAL;
+	}
+
+	/* Retry in case DSP is hibernating */
+	for (i = 0; i < CS40L26_PLL_REFCLK_SET_ATTEMPTS; i++) {
+		ret = regmap_update_bits(cs40l26->regmap, CS40L26_REFCLK_INPUT,
+				CS40L26_PLL_REFCLK_LOOP_MASK, pll_loop <<
+				CS40L26_PLL_REFCLK_LOOP_SHIFT);
+		if (!ret)
+			break;
+	}
+
+	if (i == CS40L26_PLL_REFCLK_SET_ATTEMPTS) {
+		dev_err(cs40l26->dev, "Failed to configure PLL\n");
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(cs40l26_set_pll_loop);
+
 int cs40l26_dbc_get(struct cs40l26_private *cs40l26, enum cs40l26_dbc dbc,
 		unsigned int *val)
 {
@@ -185,7 +214,7 @@ int cs40l26_dbc_get(struct cs40l26_private *cs40l26, enum cs40l26_dbc dbc,
 
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
-		cs40l26_resume_error_handle(dev);
+		cs40l26_resume_error_handle(dev, ret);
 		return ret;
 	}
 
@@ -566,7 +595,7 @@ static int cs40l26_dsp_pre_config(struct cs40l26_private *cs40l26)
 		return -EINVAL;
 	}
 
-	ret = cs40l26_pm_stdby_timeout_ms_get(cs40l26, &timeout_ms);
+	ret = cs40l26_pm_active_timeout_ms_get(cs40l26, &timeout_ms);
 	if (ret)
 		return ret;
 
@@ -1199,8 +1228,9 @@ static irqreturn_t cs40l26_irq(int irq, void *data)
 	unsigned long num_irq;
 	int ret;
 
-	if (pm_runtime_get_sync(dev) < 0) {
-		cs40l26_resume_error_handle(dev);
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		cs40l26_resume_error_handle(dev, ret);
 
 		dev_err(dev, "Interrupts missed\n");
 
@@ -1318,7 +1348,7 @@ static int cs40l26_pseq_find_end(struct cs40l26_private *cs40l26,
 	return 0;
 }
 
-static int cs40l26_pseq_write(struct cs40l26_private *cs40l26, u32 addr,
+int cs40l26_pseq_write(struct cs40l26_private *cs40l26, u32 addr,
 		u32 data, bool update, u8 op_code)
 {
 	struct device *dev = cs40l26->dev;
@@ -1330,6 +1360,22 @@ static int cs40l26_pseq_write(struct cs40l26_private *cs40l26, u32 addr,
 	int num_op_words;
 	u32 *op_words;
 	int ret;
+
+
+	/*
+	 * Due to a bug in the DSP ROM, if data[23] = 1 for a WRITE_FULL
+	 * operation, then, when the DSP power-on write sequencer
+	 * actually applies these writes when coming out of hibernate,
+	 * the DSP sign-extends bit 23 to bits[31:24]. So, warn if it
+	 * appears the PSEQ will not function as expected.
+	 */
+	if ((op_code == CS40L26_PSEQ_OP_WRITE_FULL) &&
+				(data & BIT(23)) &&
+				(((data & GENMASK(31, 24)) >> 24) != 0xFF)) {
+		dev_warn(dev,
+			"PSEQ to set data[31:24] to 0xFF reg: %08X, data: %08X",
+								addr, data);
+	}
 
 	if (op_code == CS40L26_PSEQ_OP_WRITE_FULL) {
 		num_op_words = CS40L26_PSEQ_OP_WRITE_FULL_WORDS;
@@ -1444,6 +1490,7 @@ op_words_free:
 
 	return ret;
 }
+EXPORT_SYMBOL(cs40l26_pseq_write);
 
 static int cs40l26_pseq_multi_write(struct cs40l26_private *cs40l26,
 		const struct reg_sequence *reg_seq, int num_regs, bool update,
@@ -1619,8 +1666,27 @@ static int cs40l26_irq_update_mask(struct cs40l26_private *cs40l26, u32 reg,
 		return ret;
 	}
 
-	return cs40l26_pseq_write(cs40l26, reg,
-			new_mask, true, CS40L26_PSEQ_OP_WRITE_FULL);
+	if (bit_mask & GENMASK(31, 16)) {
+		ret = cs40l26_pseq_write(cs40l26, reg,
+			(new_mask & GENMASK(31, 16)) >> 16,
+			true, CS40L26_PSEQ_OP_WRITE_H16);
+		if (ret) {
+			dev_err(cs40l26->dev, "Failed to update IRQ mask H16");
+			return ret;
+		}
+	}
+
+	if (bit_mask & GENMASK(15, 0)) {
+		ret = cs40l26_pseq_write(cs40l26, reg,
+			(new_mask & GENMASK(15, 0)),
+			true, CS40L26_PSEQ_OP_WRITE_L16);
+		if (ret) {
+			dev_err(cs40l26->dev, "Failed to update IRQ mask L16");
+			return ret;
+		}
+	}
+
+	return ret;
 }
 
 static int cs40l26_buzzgen_set(struct cs40l26_private *cs40l26, u16 freq,
@@ -1709,7 +1775,7 @@ static int cs40l26_map_gpi_to_haptic(struct cs40l26_private *cs40l26,
 
 	ret = pm_runtime_get_sync(cs40l26->dev);
 	if (ret < 0) {
-		cs40l26_resume_error_handle(cs40l26->dev);
+		cs40l26_resume_error_handle(cs40l26->dev, ret);
 		return ret;
 	}
 
@@ -1754,8 +1820,9 @@ static void cs40l26_set_gain_worker(struct work_struct *work)
 	u32 reg;
 	int ret;
 
-	if (pm_runtime_get_sync(cs40l26->dev) < 0)
-		return cs40l26_resume_error_handle(cs40l26->dev);
+	ret = pm_runtime_get_sync(cs40l26->dev);
+	if (ret < 0)
+		return cs40l26_resume_error_handle(cs40l26->dev, ret);
 
 	mutex_lock(&cs40l26->lock);
 
@@ -1802,8 +1869,9 @@ static void cs40l26_vibe_start_worker(struct work_struct *work)
 
 	dev_dbg(dev, "%s\n", __func__);
 
-	if (pm_runtime_get_sync(dev) < 0)
-		return cs40l26_resume_error_handle(dev);
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0)
+		return cs40l26_resume_error_handle(dev, ret);
 
 	mutex_lock(&cs40l26->lock);
 
@@ -1889,19 +1957,19 @@ static void cs40l26_vibe_stop_worker(struct work_struct *work)
 
 	dev_dbg(cs40l26->dev, "%s\n", __func__);
 
-	if (pm_runtime_get_sync(cs40l26->dev) < 0)
-		return cs40l26_resume_error_handle(cs40l26->dev);
-
-	mutex_lock(&cs40l26->lock);
-
-	if (cs40l26->vibe_state != CS40L26_VIBE_STATE_HAPTIC &&
-		!cs40l26->vibe_state_reporting)
-		goto mutex_exit;
+	ret = pm_runtime_get_sync(cs40l26->dev);
+	if (ret < 0)
+		return cs40l26_resume_error_handle(cs40l26->dev, ret);
 
 	/* wait for SVC init phase to complete */
 	if (cs40l26->delay_before_stop_playback_us)
 		usleep_range(cs40l26->delay_before_stop_playback_us,
 				cs40l26->delay_before_stop_playback_us + 100);
+
+	mutex_lock(&cs40l26->lock);
+
+	if (cs40l26->vibe_state != CS40L26_VIBE_STATE_HAPTIC)
+		goto mutex_exit;
 
 	ret = cs40l26_ack_write(cs40l26, CS40L26_DSP_VIRTUAL1_MBOX_1,
 				CS40L26_STOP_PLAYBACK, CS40L26_DSP_MBOX_RESET);
@@ -2179,7 +2247,7 @@ static int cs40l26_owt_upload(struct cs40l26_private *cs40l26, u8 *data,
 
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
-		cs40l26_resume_error_handle(dev);
+		cs40l26_resume_error_handle(dev, ret);
 		return ret;
 	}
 
@@ -2602,8 +2670,9 @@ static void cs40l26_upload_worker(struct work_struct *work)
 	u16 index, bank;
 	bool pwle, svc_waveform;
 
-	if (pm_runtime_get_sync(cdev) < 0)
-		return cs40l26_resume_error_handle(cdev);
+	ret = pm_runtime_get_sync(cdev);
+	if (ret < 0)
+		return cs40l26_resume_error_handle(cdev, ret);
 
 	mutex_lock(&cs40l26->lock);
 
@@ -2890,8 +2959,9 @@ static void cs40l26_erase_worker(struct work_struct *work)
 	int effect_id;
 	u32 index;
 
-	if (pm_runtime_get_sync(cs40l26->dev) < 0)
-		return cs40l26_resume_error_handle(cs40l26->dev);
+	ret = pm_runtime_get_sync(cs40l26->dev);
+	if (ret < 0)
+		return cs40l26_resume_error_handle(cs40l26->dev, ret);
 
 	mutex_lock(&cs40l26->lock);
 
@@ -3171,15 +3241,15 @@ static int cs40l26_brownout_prevention_init(struct cs40l26_private *cs40l26)
 			return ret;
 		}
 
-		if (cs40l26->pdata.vbbr_thld) {
-			if (cs40l26->pdata.vbbr_thld
+		if (cs40l26->pdata.vbbr_thld_mv) {
+			if (cs40l26->pdata.vbbr_thld_mv
 					>= CS40L26_VBBR_THLD_MV_MAX)
 				vbbr_thld = CS40L26_VBBR_THLD_MAX;
-			else if (cs40l26->pdata.vbbr_thld
+			else if (cs40l26->pdata.vbbr_thld_mv
 					<= CS40L26_VBBR_THLD_MV_MIN)
 				vbbr_thld = CS40L26_VBBR_THLD_MIN;
 			else
-				vbbr_thld = cs40l26->pdata.vbbr_thld /
+				vbbr_thld = cs40l26->pdata.vbbr_thld_mv /
 					CS40L26_VBBR_THLD_MV_STEP;
 
 			val &= ~CS40L26_VBBR_THLD_MASK;
@@ -3255,8 +3325,15 @@ static int cs40l26_brownout_prevention_init(struct cs40l26_private *cs40l26)
 			return ret;
 		}
 
-		ret = cs40l26_pseq_write(cs40l26, CS40L26_VBBR_CONFIG, val,
-				true, CS40L26_PSEQ_OP_WRITE_FULL);
+		ret = cs40l26_pseq_write(cs40l26, CS40L26_VBBR_CONFIG,
+				(val & GENMASK(31, 16)) >> 16,
+				true, CS40L26_PSEQ_OP_WRITE_H16);
+		if (ret)
+			return ret;
+
+		ret = cs40l26_pseq_write(cs40l26, CS40L26_VBBR_CONFIG,
+				(val & GENMASK(15, 0)),
+				true, CS40L26_PSEQ_OP_WRITE_L16);
 		if (ret)
 			return ret;
 	}
@@ -3271,17 +3348,20 @@ static int cs40l26_brownout_prevention_init(struct cs40l26_private *cs40l26)
 		pseq_mask |= BIT(CS40L26_IRQ2_VPBR_ATT_CLR) |
 				BIT(CS40L26_IRQ2_VPBR_FLAG);
 
-		if (cs40l26->pdata.vpbr_thld) {
-			if (cs40l26->pdata.vpbr_thld
-					>= CS40L26_VPBR_THLD_MV_MAX)
+		if (cs40l26->pdata.vpbr_thld_mv) {
+			if (cs40l26->pdata.vpbr_thld_mv
+					>= CS40L26_VPBR_THLD_MV_MAX) {
 				vpbr_thld = CS40L26_VPBR_THLD_MAX;
-			else if (cs40l26->pdata.vpbr_thld
-					<= CS40L26_VPBR_THLD_MV_MIN)
+			} else if (cs40l26->pdata.vpbr_thld_mv
+					<= CS40L26_VPBR_THLD_MV_MIN) {
 				vpbr_thld = CS40L26_VPBR_THLD_MIN;
-			else
-				vpbr_thld = (cs40l26->pdata.vpbr_thld /
+			} else {
+				vpbr_thld = (cs40l26->pdata.vpbr_thld_mv /
 						CS40L26_VPBR_THLD_MV_DIV)
 						- CS40L26_VPBR_THLD_OFFSET;
+			}
+
+			cs40l26->vpbr_thld = vpbr_thld & CS40L26_VPBR_THLD_MASK;
 
 			val &= ~CS40L26_VPBR_THLD_MASK;
 			val |= (vpbr_thld & CS40L26_VPBR_THLD_MASK);
@@ -3358,8 +3438,15 @@ static int cs40l26_brownout_prevention_init(struct cs40l26_private *cs40l26)
 			return ret;
 		}
 
-		ret = cs40l26_pseq_write(cs40l26, CS40L26_VPBR_CONFIG, val,
-				true, CS40L26_PSEQ_OP_WRITE_FULL);
+		ret = cs40l26_pseq_write(cs40l26, CS40L26_VPBR_CONFIG,
+				(val & GENMASK(31, 16)) >> 16,
+				true, CS40L26_PSEQ_OP_WRITE_H16);
+		if (ret)
+			return ret;
+
+		ret = cs40l26_pseq_write(cs40l26, CS40L26_VPBR_CONFIG,
+				(val & GENMASK(15, 0)),
+				true, CS40L26_PSEQ_OP_WRITE_L16);
 		if (ret)
 			return ret;
 	}
@@ -3843,16 +3930,16 @@ static int cs40l26_dsp_config(struct cs40l26_private *cs40l26)
 	if (ret)
 		return ret;
 
+	cs40l26_pm_runtime_setup(cs40l26);
+
 	ret = cs40l26_pm_state_transition(cs40l26,
 			CS40L26_PM_STATE_ALLOW_HIBERNATE);
 	if (ret)
 		return ret;
 
-	cs40l26_pm_runtime_setup(cs40l26);
-
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
-		cs40l26_resume_error_handle(dev);
+		cs40l26_resume_error_handle(dev, ret);
 		return ret;
 	}
 
@@ -3926,54 +4013,73 @@ static void cs40l26_gain_adjust(struct cs40l26_private *cs40l26, s32 adjust)
 	cs40l26->pdata.asp_scale_pct = total;
 }
 
-static int cs40l26_tuning_select_from_svc_le(struct cs40l26_private *cs40l26,
-		u32 *tuning_num)
+int cs40l26_svc_le_estimate(struct cs40l26_private *cs40l26, unsigned int *le)
 {
-	unsigned int reg, le = 0;
-	int ret, i, j;
-
-	ret = pm_runtime_get_sync(cs40l26->dev);
-	if (ret < 0) {
-		cs40l26_resume_error_handle(cs40l26->dev);
-		return ret;
-	}
+	struct device *dev = cs40l26->dev;
+	unsigned int reg, le_est = 0;
+	int ret, i;
 
 	ret = cs40l26_ack_write(cs40l26, CS40L26_DSP_VIRTUAL1_MBOX_1,
 			CS40L26_DSP_MBOX_CMD_LE_EST, CS40L26_DSP_MBOX_RESET);
 	if (ret)
-		goto pm_err;
+		return ret;
 
 	ret = cl_dsp_get_reg(cs40l26->dsp, "LE_EST_STATUS",
 			CL_DSP_YM_UNPACKED_TYPE, CS40l26_SVC_ALGO_ID, &reg);
 	if (ret)
-		goto pm_err;
+		return ret;
 
 	for (i = 0; i < CS40L26_SVC_LE_MAX_ATTEMPTS; i++) {
-		usleep_range(5000, 5100);
-		ret = regmap_read(cs40l26->regmap, reg, &le);
+		usleep_range(CS40L26_SVC_LE_EST_TIME_US,
+				CS40L26_SVC_LE_EST_TIME_US + 100);
+		ret = regmap_read(cs40l26->regmap, reg, &le_est);
 		if (ret) {
-			dev_err(cs40l26->dev, "Failed to get LE_EST_STATUS\n");
-			goto pm_err;
+			dev_err(dev, "Failed to get LE_EST_STATUS\n");
+			return ret;
 		}
 
-		dev_dbg(cs40l26->dev, "Measured LE estimate = 0x%08X\n", le);
+		dev_info(dev, "Measured Le Estimation = %u\n", le_est);
 
-		for (j = 0; j < cs40l26->num_svc_le_vals; j++) {
-			if (le >= cs40l26->svc_le_vals[j]->min &&
-					le <= cs40l26->svc_le_vals[j]->max) {
-				*tuning_num = cs40l26->svc_le_vals[j]->n;
-
-				cs40l26_gain_adjust(cs40l26,
-					cs40l26->svc_le_vals[j]->gain_adjust);
-
-				break;
-			}
-		}
-		if (j < cs40l26->num_svc_le_vals)
+		if (le_est)
 			break;
 	}
 
-	if (i == CS40L26_SVC_LE_MAX_ATTEMPTS)
+	*le = le_est;
+
+	return 0;
+}
+EXPORT_SYMBOL(cs40l26_svc_le_estimate);
+
+static int cs40l26_tuning_select_from_svc_le(struct cs40l26_private *cs40l26,
+		u32 *tuning_num)
+{
+	unsigned int le;
+	int ret, i;
+
+	ret = pm_runtime_get_sync(cs40l26->dev);
+	if (ret < 0) {
+		cs40l26_resume_error_handle(cs40l26->dev, ret);
+		return ret;
+	}
+
+	ret = cs40l26_svc_le_estimate(cs40l26, &le);
+	if (ret)
+		goto pm_err;
+
+	if (le) {
+		for (i = 0; i < cs40l26->num_svc_le_vals; i++) {
+			if (le >= cs40l26->svc_le_vals[i]->min &&
+					le <= cs40l26->svc_le_vals[i]->max) {
+				*tuning_num = cs40l26->svc_le_vals[i]->n;
+
+				cs40l26_gain_adjust(cs40l26,
+					cs40l26->svc_le_vals[i]->gain_adjust);
+				break;
+			}
+		}
+	}
+
+	if (!le || i == cs40l26->num_svc_le_vals)
 		dev_warn(cs40l26->dev, "Using default tunings\n");
 
 pm_err:
@@ -4097,8 +4203,17 @@ static int cs40l26_change_fw_control_defaults(struct cs40l26_private *cs40l26)
 
 static int cs40l26_get_fw_params(struct cs40l26_private *cs40l26)
 {
+	u32 id, min_rev, rev, branch;
 	int ret, maj, min, patch;
-	u32 id, min_rev, rev;
+
+	ret = cl_dsp_fw_rev_get(cs40l26->dsp, &rev);
+	if (ret)
+		return ret;
+
+	branch = CL_DSP_GET_MAJOR(rev);
+	maj = (int) branch;
+	min = (int) CL_DSP_GET_MINOR(rev);
+	patch = (int) CL_DSP_GET_PATCH(rev);
 
 	ret = cl_dsp_fw_id_get(cs40l26->dsp, &id);
 	if (ret)
@@ -4106,34 +4221,42 @@ static int cs40l26_get_fw_params(struct cs40l26_private *cs40l26)
 
 	switch (id) {
 	case CS40L26_FW_ID:
-		min_rev = CS40L26_FW_A1_RAM_MIN_REV;
+		if (branch == CS40L26_FW_BRANCH) {
+			min_rev = CS40L26_FW_MIN_REV;
+			cs40l26->vibe_state_reporting = true;
+		} else if (branch == CS40L26_FW_MAINT_BRANCH) {
+			min_rev = CS40L26_FW_MAINT_MIN_REV;
+			cs40l26->vibe_state_reporting = false;
+		} else {
+			ret = -EINVAL;
+		}
 		break;
 	case CS40L26_FW_CALIB_ID:
-		min_rev = CS40L26_FW_CALIB_MIN_REV;
+		if (branch == CS40L26_FW_CALIB_BRANCH) {
+			min_rev = CS40L26_FW_CALIB_MIN_REV;
+			cs40l26->vibe_state_reporting = true;
+		} else if (branch == CS40L26_FW_MAINT_CALIB_BRANCH) {
+			min_rev = CS40L26_FW_MAINT_CALIB_MIN_REV;
+			cs40l26->vibe_state_reporting = false;
+		} else {
+			ret = -EINVAL;
+		}
 		break;
 	default:
 		dev_err(cs40l26->dev, "Invalid FW ID: 0x%06X\n", id);
+		return -EINVAL;
 	}
 
-	ret = cl_dsp_fw_rev_get(cs40l26->dsp, &rev);
-	if (ret)
+	if (ret) {
+		dev_err(cs40l26->dev, "Rev. Branch 0x%02X invalid\n", maj);
 		return ret;
+	}
 
-	maj = (int) CL_DSP_GET_MAJOR(rev);
-	min = (int) CL_DSP_GET_MINOR(rev);
-	patch = (int) CL_DSP_GET_PATCH(rev);
-
-	if ((rev & ~CS40L26_FW_BRANCH_MASK) < min_rev) {
+	if (rev < min_rev) {
 		dev_err(cs40l26->dev, "Invalid firmware revision: %d.%d.%d\n",
 				maj, min, patch);
 		return -EINVAL;
 	}
-
-	if ((rev & CS40L26_FW_BRANCH_MASK) ==
-			(CS40L26_FW_A1_RAM_MIN_REV & CS40L26_FW_BRANCH_MASK))
-		cs40l26->vibe_state_reporting = true;
-	else
-		cs40l26->vibe_state_reporting = false;
 
 	cs40l26->fw_id = id;
 
@@ -4172,14 +4295,13 @@ static int cs40l26_fw_upload(struct cs40l26_private *cs40l26)
 	const struct firmware *fw;
 	int ret;
 
-start:
 	cs40l26->fw_loaded = false;
 
 	ret = cs40l26_cl_dsp_reinit(cs40l26);
 	if (ret)
 		return ret;
 
-	if (svc_le_required || cs40l26->calib_fw)
+	if (cs40l26->calib_fw)
 		ret = request_firmware(&fw, CS40L26_FW_CALIB_NAME, dev);
 	else
 		ret = request_firmware(&fw, CS40L26_FW_FILE_NAME, dev);
@@ -4207,8 +4329,6 @@ start:
 		return ret;
 
 	if (svc_le_required) {
-		svc_le_required = false;
-
 		ret = cs40l26_dsp_config(cs40l26);
 		if (ret)
 			return ret;
@@ -4218,7 +4338,10 @@ start:
 			return ret;
 
 		cs40l26_pm_runtime_teardown(cs40l26);
-		goto start;
+
+		ret = cs40l26_dsp_pre_config(cs40l26);
+		if (ret)
+			return ret;
 	}
 
 	ret = cs40l26_coeff_load(cs40l26, tuning_num);
@@ -4429,7 +4552,7 @@ static int cs40l26_handle_platform_data(struct cs40l26_private *cs40l26)
 			of_property_read_bool(np, "cirrus,vbbr-enable");
 
 	if (!of_property_read_u32(np, "cirrus,vbbr-thld-mv", &val))
-		cs40l26->pdata.vbbr_thld = val;
+		cs40l26->pdata.vbbr_thld_mv = val;
 
 	if (!of_property_read_u32(np, "cirrus,vbbr-max-att-db", &val))
 		cs40l26->pdata.vbbr_max_att = val;
@@ -4456,7 +4579,7 @@ static int cs40l26_handle_platform_data(struct cs40l26_private *cs40l26)
 			of_property_read_bool(np, "cirrus,vpbr-enable");
 
 	if (!of_property_read_u32(np, "cirrus,vpbr-thld-mv", &val))
-		cs40l26->pdata.vpbr_thld = val;
+		cs40l26->pdata.vpbr_thld_mv = val;
 
 	if (!of_property_read_u32(np, "cirrus,vpbr-max-att-db", &val))
 		cs40l26->pdata.vpbr_max_att = val;
@@ -4641,6 +4764,27 @@ int cs40l26_probe(struct cs40l26_private *cs40l26,
 	usleep_range(CS40L26_CONTROL_PORT_READY_DELAY,
 			CS40L26_CONTROL_PORT_READY_DELAY + 100);
 
+	/*
+	 * The DSP may lock up if a haptic effect is triggered via
+	 * GPI event or control port and the PLL is set to closed-loop.
+	 *
+	 * Set PLL to open-loop and remove any default GPI mappings
+	 * to prevent this while the driver is loading and configuring RAM
+	 * firmware.
+	 */
+
+	ret = cs40l26_set_pll_loop(cs40l26, CS40L26_PLL_REFCLK_SET_OPEN_LOOP);
+	if (ret)
+		return ret;
+
+	ret = cs40l26_clear_gpi_event_reg(cs40l26, CS40L26_A1_EVENT_MAP_1);
+	if (ret)
+		return ret;
+
+	ret = cs40l26_clear_gpi_event_reg(cs40l26, CS40L26_A1_EVENT_MAP_2);
+	if (ret)
+		return ret;
+
 	ret = cs40l26_part_num_resolve(cs40l26);
 	if (ret)
 		goto err;
@@ -4781,9 +4925,9 @@ int cs40l26_sys_suspend_noirq(struct device *dev)
 }
 EXPORT_SYMBOL(cs40l26_sys_suspend_noirq);
 
-void cs40l26_resume_error_handle(struct device *dev)
+void cs40l26_resume_error_handle(struct device *dev, int ret)
 {
-	dev_err(dev, "PM Runtime Resume failed\n");
+	dev_err(dev, "PM Runtime Resume failed: %d\n", ret);
 
 	pm_runtime_set_active(dev);
 
