@@ -689,6 +689,8 @@
 #define CS40L26_A1_PM_TIMEOUT_TICKS_STATIC_REG		0x02800350
 #define CS40L26_A1_DSP_HALO_STATE_REG			0x02800fa8
 #define CS40L26_A1_DSP_REQ_ACTIVE_REG			0x02800c08
+#define CS40L26_A1_EVENT_MAP_1				0x02806FC4
+#define CS40L26_A1_EVENT_MAP_2				0x02806FC8
 
 
 /* algorithms */
@@ -846,13 +848,20 @@
 #define CS40L26_DVL_FILE_NAME			"cs40l26-dvl.bin"
 #define CS40L26_CALIB_BIN_FILE_NAME		"cs40l26-calib.bin"
 
+#define CS40L26_SVC_LE_EST_TIME_US	8000
 #define CS40L26_SVC_LE_MAX_ATTEMPTS	2
 #define CS40L26_SVC_DT_PREFIX		"svc-le"
 
 #define CS40L26_FW_ID			0x1800D4
-#define CS40L26_FW_A1_RAM_MIN_REV	0x07021C
+#define CS40L26_FW_MIN_REV		0x07021C
+#define CS40L26_FW_BRANCH		0x07
 #define CS40L26_FW_CALIB_ID		0x1800DA
 #define CS40L26_FW_CALIB_MIN_REV	0x010014
+#define CS40L26_FW_CALIB_BRANCH		0x01
+#define CS40L26_FW_MAINT_MIN_REV	0x27021A
+#define CS40L26_FW_MAINT_BRANCH		0x27
+#define CS40L26_FW_MAINT_CALIB_MIN_REV	0x210112
+#define CS40L26_FW_MAINT_CALIB_BRANCH	0x21
 #define CS40L26_FW_BRANCH_MASK		GENMASK(23, 21)
 
 #define CS40L26_CCM_CORE_RESET		0x00000200
@@ -870,7 +879,7 @@
 #define CS40L26_VA_SUPPLY_NAME		"VA"
 
 #define CS40L26_MIN_RESET_PULSE_WIDTH		1500
-#define CS40L26_CONTROL_PORT_READY_DELAY	3000
+#define CS40L26_CONTROL_PORT_READY_DELAY	6000
 
 /* haptic triggering */
 #define CS40L26_TRIGGER_EFFECT			1
@@ -1095,8 +1104,11 @@
 #define CS40L26_PLL_REFCLK_EN_SHIFT		4
 #define CS40L26_PLL_REFCLK_FREQ_MASK		GENMASK(10, 5)
 #define CS40L26_PLL_REFCLK_FREQ_SHIFT		5
-#define CS40L26_PLL_REFCLK_OPEN_LOOP_MASK	BIT(11)
-#define CS40L26_PLL_REFCLK_OPEN_LOOP_SHIFT	11
+#define CS40L26_PLL_REFCLK_LOOP_MASK		BIT(11)
+#define CS40L26_PLL_REFCLK_LOOP_SHIFT		11
+#define CS40L26_PLL_REFCLK_SET_OPEN_LOOP	1
+#define CS40L26_PLL_REFCLK_SET_CLOSED_LOOP	0
+#define CS40L26_PLL_REFCLK_SET_ATTEMPTS		5
 #define CS40L26_PLL_REFCLK_FORCE_EN_MASK	BIT(16)
 #define CS40L26_PLL_REFCLK_FORCE_EN_SHIFT	16
 
@@ -1412,14 +1424,14 @@ struct cs40l26_svc_le {
 struct cs40l26_platform_data {
 	const char *device_name;
 	bool vbbr_en;
-	u32 vbbr_thld;
+	u32 vbbr_thld_mv;
 	u32 vbbr_max_att;
 	u32 vbbr_atk_step;
 	u32 vbbr_atk_rate;
 	u32 vbbr_wait;
 	u32 vbbr_rel_rate;
 	bool vpbr_en;
-	u32 vpbr_thld;
+	u32 vpbr_thld_mv;
 	u32 vpbr_max_att;
 	u32 vpbr_atk_step;
 	u32 vpbr_atk_rate;
@@ -1501,6 +1513,7 @@ struct cs40l26_private {
 	bool comp_enable_redc;
 	bool comp_enable_f0;
 	struct completion i2s_cont;
+	u8 vpbr_thld;
 };
 
 struct cs40l26_codec {
@@ -1515,8 +1528,6 @@ struct cs40l26_codec {
 	int tdm_width;
 	int tdm_slots;
 	int tdm_slot[2];
-	bool svc_for_streaming_data;
-	bool invert_streaming_data;
 	bool bypass_dsp;
 };
 
@@ -1526,6 +1537,9 @@ struct cs40l26_pll_sysclk_config {
 };
 
 /* exported function prototypes */
+int cs40l26_svc_le_estimate(struct cs40l26_private *cs40l26, unsigned int *le);
+int cs40l26_set_pll_loop(struct cs40l26_private *cs40l26,
+		unsigned int pll_loop);
 int cs40l26_dbc_enable(struct cs40l26_private *cs40l26, u32 enable);
 int cs40l26_dbc_get(struct cs40l26_private *cs40l26, enum cs40l26_dbc dbc,
 		unsigned int *val);
@@ -1548,7 +1562,7 @@ int cs40l26_pm_state_transition(struct cs40l26_private *cs40l26,
 		enum cs40l26_pm_state state);
 int cs40l26_ack_write(struct cs40l26_private *cs40l26, u32 reg, u32 write_val,
 		u32 reset_val);
-void cs40l26_resume_error_handle(struct device *dev);
+void cs40l26_resume_error_handle(struct device *dev, int ret);
 int cs40l26_resume(struct device *dev);
 int cs40l26_sys_resume(struct device *dev);
 int cs40l26_sys_resume_noirq(struct device *dev);
@@ -1562,6 +1576,8 @@ int cs40l26_remove(struct cs40l26_private *cs40l26);
 bool cs40l26_precious_reg(struct device *dev, unsigned int ret);
 bool cs40l26_readable_reg(struct device *dev, unsigned int reg);
 bool cs40l26_volatile_reg(struct device *dev, unsigned int reg);
+int cs40l26_pseq_write(struct cs40l26_private *cs40l26, u32 addr,
+	u32 data, bool update, u8 op_code);
 
 /* external tables */
 extern const struct of_device_id cs40l26_of_match[CS40L26_NUM_DEVS + 1];
